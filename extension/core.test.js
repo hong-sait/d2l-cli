@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { TESTS, request, runContent, runWorker, sanitizedReport } = require("./core.js");
+const { TESTS, request, runContent, runWorker, fetchWhoami, sanitizedReport } = require("./core.js");
 
 function response({ status = 200, type = "application/json", url = "https://learn.sait.ca/d2l/api/lp/1.63/users/whoami", body = { Identifier: "redacted" }, redirected = false } = {}) {
   return { status, ok: status >= 200 && status < 300, url, redirected,
@@ -87,4 +87,21 @@ test("sanitized report cannot contain fetched profile values", async () => {
   const report = sanitizedReport([result], "test browser");
   assert.doesNotMatch(report, /PRIVATE_PROFILE_SENTINEL/);
   assert.match(report, /M1-04/);
+});
+
+test("whoami bridge returns only the allowlisted identity fields", async () => {
+  const result = await fetchWhoami(async () => response({ body: {
+    Identifier: "12345", UniqueName: "student.example", FirstName: "Private", LastName: "Person",
+    Email: "private@example.invalid"
+  } }));
+  assert.deepEqual(result, { ok: true, data: { Identifier: "12345", UniqueName: "student.example" } });
+  assert.doesNotMatch(JSON.stringify(result), /Private|private@example/);
+});
+
+test("whoami bridge maps expired sign-in to an actionable sanitized error", async () => {
+  const result = await fetchWhoami(async () => response({ status: 403, type: "text/html", body: "private page" }));
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "auth_required");
+  assert.match(result.error.message, /Sign in/);
+  assert.doesNotMatch(JSON.stringify(result), /private page|html>/i);
 });

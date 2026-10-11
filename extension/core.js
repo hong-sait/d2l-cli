@@ -116,8 +116,47 @@
     return request({ ...test, validate: () => true }, fetchImpl,
       { context: "service worker", credentials: "include", includeFinalOrigin: true });
   }
+  async function fetchWhoami(fetchImpl) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetchImpl(BASE + "/d2l/api/lp/1.63/users/whoami", {
+        method: "GET", credentials: "include", redirect: "follow", cache: "no-store",
+        signal: controller.signal, headers: { "Accept": "application/json" }
+      });
+      if (response.redirected || !response.url.startsWith(BASE + "/")) {
+        return { ok: false, error: { code: "auth_required", message: "Sign in to Brightspace and retry." } };
+      }
+      if (response.status === 401 || response.status === 403) {
+        return { ok: false, error: { code: "auth_required", message: "Sign in to Brightspace and retry." } };
+      }
+      if (!response.ok) {
+        return { ok: false, error: { code: "http_error", message: `Brightspace returned HTTP ${response.status}.` } };
+      }
+      const contentType = (response.headers.get("content-type") || "").split(";")[0].trim();
+      if (!/(?:^|\/)json$/i.test(contentType) && !/\+json$/i.test(contentType)) {
+        return { ok: false, error: { code: "invalid_response", message: "Brightspace returned a non-JSON response." } };
+      }
+      let data;
+      try { data = await response.json(); }
+      catch (_) { return { ok: false, error: { code: "invalid_response", message: "Brightspace returned invalid JSON." } }; }
+      if (!profile(data)) {
+        return { ok: false, error: { code: "invalid_response", message: "Brightspace returned an unexpected profile structure." } };
+      }
+      const identifier = String(data.Identifier);
+      const uniqueName = data.UniqueName;
+      const safeField = value => value.length <= 256 && !/[\u0000-\u001f\u007f]/.test(value);
+      if (!safeField(identifier) || !safeField(uniqueName)) {
+        return { ok: false, error: { code: "invalid_response", message: "Brightspace returned unsafe profile fields." } };
+      }
+      return { ok: true, data: { Identifier: identifier, UniqueName: uniqueName } };
+    } catch (error) {
+      return { ok: false, error: { code: error && error.name === "AbortError" ? "timeout" : "network_error",
+        message: error && error.name === "AbortError" ? "Brightspace request timed out." : "Brightspace request failed; check connectivity and sign-in." } };
+    } finally { clearTimeout(timer); }
+  }
   function sanitizedReport(results, browser) {
     return JSON.stringify({ generatedAt: new Date().toISOString(), browser: String(browser || "unknown").slice(0, 80), results }, null, 2);
   }
-  return { BASE, TESTS, request, runContent, runWorker, sanitizedReport };
+  return { BASE, TESTS, request, runContent, runWorker, fetchWhoami, sanitizedReport };
 });

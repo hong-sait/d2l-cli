@@ -25,5 +25,6 @@ The registered executable is `~/.local/bin/d2l-native-host`; the manifest is `~/
 | Build and static checks | PASS | Go vet, Windows amd64 cross-build, JavaScript syntax checks, installer `sh -n`, `git diff --check` |
 | Registered Chrome manifest and binary | PASS | Manifest parsed; executable path and exact extension origin allowlist verified; host exited cleanly on EOF |
 | Live Chrome extension connection | PASS | User screenshot shows **“Native Messaging host connected.”** in the popup after clicking **Test Native Messaging** |
+| Live Edge extension connection | PASS (user reported) | User confirmed **“Native Messaging host connected.”** after the Edge Brightspace API run. Edge's exact version and host-registration lookup path were not captured; the installer only writes the Chrome registration manifest. |
 
-M2's Chrome Native Messaging connection and malformed/oversized-message checks are verified. This is not M3: the host implements only the fixed ping and does not broker API or CLI operations. M1 remains open in `docs/m1-test-report.md`; Edge was deferred at the user's request.
+M2's Chrome Native Messaging connection and malformed/oversized-message checks are verified; the user also reports a successful Edge connection. The Edge native-host registration path was not independently verified. This is not M3: the host implements only the fixed ping and does not broker API or CLI operations. M1 remains open in `docs/m1-test-report.md` until the user explicitly accepts the milestone.

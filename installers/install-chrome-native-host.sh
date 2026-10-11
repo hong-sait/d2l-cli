@@ -24,13 +24,21 @@ repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 user_home=${HOME:?HOME must be set}
 install_dir="$user_home/.local/bin"
 binary_path="$install_dir/d2l-native-host"
+cli_path="$install_dir/d2l"
 manifest_dir="$user_home/Library/Application Support/Google/Chrome/NativeMessagingHosts"
 manifest_path="$manifest_dir/com.sait.d2l.json"
+
+if [ -e "$cli_path" ]; then
+  printf 'Refusing to overwrite existing CLI: %s\n' "$cli_path" >&2
+  exit 2
+fi
 
 mkdir -p "$install_dir" "$manifest_dir"
 linker_flag="-X main.expectedExtensionOrigin=chrome-extension://$extension_id/"
 (cd "$repo_root" && go build -ldflags "$linker_flag" -o "$binary_path" .)
+cp "$binary_path" "$cli_path"
 chmod 755 "$binary_path"
+chmod 755 "$cli_path"
 
 json_binary_path=$(printf '%s' "$binary_path" | sed 's/\\/\\\\/g; s/"/\\"/g')
 cat > "$manifest_path" <<EOF
@@ -45,5 +53,6 @@ EOF
 chmod 644 "$manifest_path"
 
 printf 'Installed native host binary: %s\n' "$binary_path"
+printf 'Installed CLI binary: %s\n' "$cli_path"
 printf 'Registered Chrome host manifest: %s\n' "$manifest_path"
 printf '%s\n' 'Restart Chrome, then use the extension’s Test Native Messaging action.'

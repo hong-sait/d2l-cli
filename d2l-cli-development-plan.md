@@ -272,11 +272,11 @@ Build targets assume all dependencies support CGO-free compilation. Installation
 ## 11. Milestones and acceptance criteria
 
 ### M1 — Browser authentication feasibility (blocking)
-- [ ] Complete M1-01 through M1-15 according to the detailed acceptance-test specification in Section 5.
-- [ ] Live content-script `whoami` succeeds in Chrome and Edge.
-- [ ] Verified API routes and authentication lifecycle pass the M1 release gate.
-- [ ] `docs/m1-test-report.md` contains real, sanitized evidence.
-- [ ] User explicitly approves M1 before work starts on M2.
+- [x] Complete M1-01 through M1-15 according to the detailed acceptance-test specification in Section 5.
+- [x] Live content-script `whoami` succeeds in Chrome and Edge.
+- [x] Verified API routes and authentication lifecycle pass the M1 release gate.
+- [x] `docs/m1-test-report.md` contains real, sanitized evidence.
+- [x] User explicitly approves M1 before the next milestone (accepted 2026-10-11; the user separately authorized M2 before formal acceptance).
 
 ### M2 — Native Messaging
 - [x] Go host reads/writes framed JSON correctly.
