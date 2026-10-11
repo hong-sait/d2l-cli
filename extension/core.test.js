@@ -1,0 +1,90 @@
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { TESTS, request, runContent, runWorker, sanitizedReport } = require("./core.js");
+
+function response({ status = 200, type = "application/json", url = "https://learn.sait.ca/d2l/api/lp/1.63/users/whoami", body = { Identifier: "redacted" }, redirected = false } = {}) {
+  return { status, ok: status >= 200 && status < 300, url, redirected,
+    headers: { get: name => name.toLowerCase() === "content-type" ? type : null },
+    json: async () => body };
+}
+
+test("fixed endpoint set contains only four approved GET checks", () => {
+  assert.deepEqual(TESTS.map(t => t.path), [
+    "/d2l/api/versions/", "/d2l/api/lp/1.63/users/whoami",
+    "/d2l/api/lp/1.63/enrollments/myenrollments/", "/d2l/api/le/1.99/6605/content/root/"
+  ]);
+});
+
+test("versions check accepts Brightspace product-version array and records only latest lp/le", async () => {
+  const body = [
+    { ProductCode: "lp", LatestVersion: "1.63", SupportedVersions: ["1.63"] },
+    { ProductCode: "le", LatestVersion: "1.99", SupportedVersions: ["1.99"] }
+  ];
+  const result = await request(TESTS[0], async () => response({ url: "https://learn.sait.ca/d2l/api/versions/", body }),
+    { context: "content script", credentials: "same-origin" });
+  assert.equal(result.result, "PASS");
+  assert.deepEqual(result.advertisedVersions, { lp: "1.63", le: "1.99" });
+});
+
+test("fixture-course 403 is blocked rather than auth success or product failure", async () => {
+  const result = await request(TESTS[3], async () => response({ status: 403, url: "https://learn.sait.ca/d2l/api/le/1.99/6605/content/root/" }),
+    { context: "content script", credentials: "same-origin" });
+  assert.equal(result.result, "BLOCKED");
+});
+
+test("fixture-course 403 becomes AUTH_REQUIRED when session endpoints show logout", async () => {
+  const fetchImpl = async url => {
+    if (url.endsWith("/d2l/api/versions/")) return response({
+      url, body: [
+        { ProductCode: "lp", LatestVersion: "1.63", SupportedVersions: ["1.63"] },
+        { ProductCode: "le", LatestVersion: "1.99", SupportedVersions: ["1.99"] }
+      ]
+    });
+    if (url.includes("whoami") || url.includes("myenrollments")) return response({ status: 403, type: "text/html", url });
+    return response({ status: 403, type: "text/plain", url });
+  };
+  const results = await runContent(fetchImpl);
+  assert.equal(results.find(row => row.id === "M1-04").result, "AUTH_REQUIRED");
+  assert.equal(results.find(row => row.id === "M1-06").result, "AUTH_REQUIRED");
+});
+
+test("network failure returns a bounded message without throwing", async () => {
+  const result = await request(TESTS[1], async () => { throw new TypeError("Failed to fetch"); },
+    { context: "content script", credentials: "same-origin" });
+  assert.equal(result.result, "FAIL");
+  assert.match(result.error, /Network request failed/);
+  assert.doesNotMatch(result.error, /Failed to fetch/);
+});
+
+test("HTML login response is AUTH_REQUIRED even when HTTP 200", async () => {
+  const result = await request(TESTS[1], async () => response({ type: "text/html", body: "<html>private</html>" }),
+    { context: "content script", credentials: "same-origin" });
+  assert.equal(result.status, 200);
+  assert.equal(result.result, "AUTH_REQUIRED");
+  assert.doesNotMatch(JSON.stringify(result), /private|html>/i);
+});
+
+test("redirect to SSO is AUTH_REQUIRED and worker report keeps final origin only", async () => {
+  const result = await runWorker(async () => response({ url: "https://login.example.test/signin", redirected: true, type: "text/html" }));
+  assert.equal(result.result, "AUTH_REQUIRED");
+  assert.equal(result.finalOrigin, "https://login.example.test");
+  assert.equal(result.jsonReturned, false);
+  assert.equal(result.path, TESTS[1].path);
+});
+
+test("service-worker diagnostic records HTTP JSON without applying profile-field validation", async () => {
+  const result = await runWorker(async () => response({ body: { Identifier: "redacted" } }));
+  assert.equal(result.id, "M1-07");
+  assert.equal(result.result, "PASS");
+  assert.equal(result.jsonReturned, true);
+  assert.equal(result.finalOrigin, "https://learn.sait.ca");
+});
+
+test("sanitized report cannot contain fetched profile values", async () => {
+  const result = await request(TESTS[1], async () => response({ body: { Identifier: "PRIVATE_PROFILE_SENTINEL", UniqueName: "private.unique" } }),
+    { context: "content script", credentials: "same-origin" });
+  const report = sanitizedReport([result], "test browser");
+  assert.doesNotMatch(report, /PRIVATE_PROFILE_SENTINEL/);
+  assert.match(report, /M1-04/);
+});

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Brightspace M1 Authentication Check",
+  "version": "0.1.0",
+  "description": "Manual, read-only feasibility checks for approved Brightspace API routes.",
+  "permissions": ["activeTab", "nativeMessaging"],
+  "host_permissions": ["https://learn.sait.ca/*"],
+  "action": { "default_title": "Brightspace M1 checks", "default_popup": "popup.html" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["https://learn.sait.ca/*"],
+    "js": ["core.js", "content.js"],
+    "run_at": "document_idle"
+  }]
+}
