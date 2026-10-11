@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { TESTS, request, runContent, runWorker, fetchWhoami, sanitizedReport } = require("./core.js");
+const { TESTS, request, runContent, runWorker, fetchWhoami, fetchReadOperation, sanitizedReport } = require("./core.js");
 
 function response({ status = 200, type = "application/json", url = "https://learn.sait.ca/d2l/api/lp/1.63/users/whoami", body = { Identifier: "redacted" }, redirected = false } = {}) {
   return { status, ok: status >= 200 && status < 300, url, redirected,
@@ -104,4 +104,26 @@ test("whoami bridge maps expired sign-in to an actionable sanitized error", asyn
   assert.equal(result.error.code, "auth_required");
   assert.match(result.error.message, /Sign in/);
   assert.doesNotMatch(JSON.stringify(result), /private page|html>/i);
+});
+
+test("courses page uses only the fixed enrollment route and projects allowlisted course fields", async () => {
+  let seen;
+  const result = await fetchReadOperation("courses.page", { bookmark: "7&other=x" }, async (url, options) => {
+    seen = { url, options };
+    if (url.endsWith("/d2l/api/versions/")) return response({ url, body: [{ ProductCode: "lp", LatestVersion: "1.63" }] });
+    return response({ url, body: { Items: [{ User: { Identifier: "private" }, OrgUnit: { Id: 42, Name: "Course", Code: "ABC", Type: { Code: "Course Offering" } }, Access: { IsActive: true, ClasslistRoleName: "Learner" } }], PagingInfo: { Bookmark: "42", HasMoreItems: true } } });
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.data, { courses: [{ id: "42", name: "Course", code: "ABC", typeCode: "Course Offering", role: "Learner", active: true }], paging: { bookmark: "42", hasMoreItems: true } });
+  assert.equal(seen.options.method, "GET");
+  assert.match(seen.url, /bookmark=7%26other%3Dx$/);
+  assert.doesNotMatch(JSON.stringify(result), /private/);
+});
+
+test("read operations reject arbitrary operation names and unsafe course IDs before fetch", async () => {
+  let calls = 0;
+  const fetchImpl = async () => { calls++; throw new Error("unexpected"); };
+  assert.equal((await fetchReadOperation("proxy", { url: "https://example.com" }, fetchImpl)).ok, false);
+  assert.equal((await fetchReadOperation("content.list", { courseId: "1/../2" }, fetchImpl)).ok, false);
+  assert.equal(calls, 0);
 });

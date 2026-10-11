@@ -284,15 +284,19 @@ Build targets assume all dependencies support CGO-free compilation. Installation
 - [x] Malformed/oversized messages are rejected.
 
 ### M3 — Bash CLI integration
-- [ ] Secure local IPC bridge works.
-- [ ] `d2l whoami` returns data through extension.
-- [ ] CLI works across browser restarts and reports disconnected state.
+- [x] Secure local IPC bridge works.
+- [x] `d2l whoami` returns data through extension.
+- [x] CLI works across browser restarts and reports disconnected state.
+
+**User acceptance:** Marked complete by explicit user direction on 2026-10-11. Automated bridge, CLI, and extension tests pass. The user confirmed the native host connected in Edge; no sanitized live `d2l whoami`/restart output was provided, so that manual evidence is not represented as independently observed.
 
 ### M4 — Read-only API operations
 - [ ] `d2l api versions` works.
 - [ ] `d2l courses list` handles pagination and filters course offerings.
 - [ ] `d2l content list --course ID` retrieves root content.
 - [ ] JSON and CSV output are valid.
+
+M4 implementation and automated checks are complete; live browser-backed CLI acceptance is pending. See `docs/m4-read-only-operations.md`.
 
 ### M5 — Reliability and security
 - [ ] No cookies or tokens stored, forwarded, or logged.

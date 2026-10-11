@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -91,41 +93,68 @@ func newRequestID() string {
 
 func runCLI(args []string, stdout, stderr io.Writer, socketPath string) error {
 	if len(args) == 1 && args[0] == "--help" {
-		fmt.Fprintln(stdout, "Usage: d2l <status|whoami>")
+		fmt.Fprintln(stdout, "Usage: d2l <status|whoami|api versions|courses list|content list --course ID>")
 		return nil
 	}
-	if len(args) != 1 || (args[0] != "status" && args[0] != "whoami") {
-		fmt.Fprintln(stderr, "Usage: d2l <status|whoami>")
-		return fmt.Errorf("unsupported command")
+	command, format, activeOnly, courseID, err := parseCLI(args)
+	if err != nil {
+		fmt.Fprintln(stderr, "Usage: d2l status | whoami | api versions | courses list [--active] [--format table|json|csv] | content list --course ID [--format table|json|csv]")
+		return err
 	}
 	if socketPath == "" {
-		var err error
 		socketPath, err = ipc.SocketPath()
 		if err != nil {
 			fmt.Fprintln(stderr, "Browser bridge is disconnected. Open Brightspace in Chrome or Edge and try again.")
 			return err
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 22*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	request := native.Request{ID: newRequestID(), Operation: "ping", Params: []byte(`{}`)}
-	if args[0] == "whoami" {
-		request.Operation = "whoami"
+	if command == "status" || command == "whoami" {
+		operation := "ping"
+		if command == "whoami" {
+			operation = "whoami"
+		}
+		response, err := callBridge(ctx, socketPath, operation, json.RawMessage(`{}`))
+		return printSimpleResponse(command, response, err, stdout, stderr)
 	}
-	response, err := ipc.Call(ctx, socketPath, request)
+	if command == "api versions" {
+		response, err := callBridge(ctx, socketPath, "api.versions", json.RawMessage(`{}`))
+		if err != nil || !response.OK {
+			return reportBridgeError(response, err, stderr)
+		}
+		return writeVersions(stdout, response.Data.Versions, format)
+	}
+	if command == "content list" {
+		params, _ := json.Marshal(map[string]string{"courseId": courseID})
+		response, err := callBridge(ctx, socketPath, "content.list", params)
+		if err != nil || !response.OK {
+			return reportBridgeError(response, err, stderr)
+		}
+		return writeContent(stdout, response.Data.Content, format)
+	}
+	courses, err := listCourses(ctx, socketPath, activeOnly)
+	if err != nil {
+		fmt.Fprintln(stderr, "Could not list courses: "+safeCLIErr(err))
+		return err
+	}
+	return writeCourses(stdout, courses, format)
+}
+
+func printSimpleResponse(command string, response native.Response, err error, stdout, stderr io.Writer) error {
 	if err != nil || !response.OK {
 		message := "Browser bridge is disconnected. Open Brightspace in Chrome or Edge and try again."
 		if response.Error != nil && response.Error.Code == "auth_required" {
 			message = "Brightspace sign-in is required. Sign in in the browser and retry."
 		}
-		if args[0] == "status" {
+		if command == "status" {
 			fmt.Fprintln(stdout, "Browser bridge: disconnected")
 			return nil
 		}
 		fmt.Fprintln(stderr, message)
 		return fmt.Errorf("browser bridge request failed")
 	}
-	if args[0] == "status" {
+	if command == "status" {
 		if response.Data == nil || response.Data.Status != "ready" {
 			fmt.Fprintln(stdout, "Browser bridge: disconnected")
 			return nil
@@ -139,4 +168,217 @@ func runCLI(args []string, stdout, stderr io.Writer, socketPath string) error {
 	}
 	fmt.Fprintf(stdout, "Identifier: %s\nUnique name: %s\n", response.Data.Identifier, response.Data.UniqueName)
 	return nil
+}
+
+func callBridge(ctx context.Context, socket, operation string, params json.RawMessage) (native.Response, error) {
+	return ipc.Call(ctx, socket, native.Request{ID: newRequestID(), Operation: operation, Params: params})
+}
+
+func reportBridgeError(response native.Response, err error, stderr io.Writer) error {
+	message := "Browser bridge is disconnected. Open Brightspace in Chrome or Edge and try again."
+	if err == nil && response.Error != nil {
+		message = response.Error.Message
+	}
+	fmt.Fprintln(stderr, message)
+	return fmt.Errorf("browser API request failed")
+}
+
+func safeCLIErr(err error) string {
+	if err == nil {
+		return "request failed"
+	}
+	return "browser bridge request failed"
+}
+
+func parseCLI(args []string) (command, format string, active bool, course string, err error) {
+	if len(args) == 1 && args[0] == "status" {
+		return "status", "table", false, "", nil
+	}
+	if len(args) == 1 && args[0] == "whoami" {
+		return "whoami", "table", false, "", nil
+	}
+	if len(args) == 2 && args[0] == "api" && args[1] == "versions" {
+		return "api versions", "table", false, "", nil
+	}
+	if len(args) < 2 {
+		return "", "", false, "", fmt.Errorf("unsupported command")
+	}
+	command = args[0] + " " + args[1]
+	if command != "courses list" && command != "content list" {
+		return "", "", false, "", fmt.Errorf("unsupported command")
+	}
+	for i := 2; i < len(args); i++ {
+		switch args[i] {
+		case "--active":
+			if command != "courses list" || active {
+				return "", "", false, "", fmt.Errorf("invalid option")
+			}
+			active = true
+		case "--course":
+			if command != "content list" || course != "" || i+1 >= len(args) {
+				return "", "", false, "", fmt.Errorf("invalid course")
+			}
+			i++
+			course = args[i]
+			if !decimalID(course) {
+				return "", "", false, "", fmt.Errorf("invalid course")
+			}
+		case "--format":
+			if i+1 >= len(args) {
+				return "", "", false, "", fmt.Errorf("missing format")
+			}
+			i++
+			format = args[i]
+			if format != "table" && format != "json" && format != "csv" {
+				return "", "", false, "", fmt.Errorf("unsupported format")
+			}
+		default:
+			return "", "", false, "", fmt.Errorf("unsupported option")
+		}
+	}
+	if format == "" {
+		format = "table"
+	}
+	if command == "content list" && course == "" {
+		return "", "", false, "", fmt.Errorf("course is required")
+	}
+	return command, format, active, course, nil
+}
+
+func decimalID(s string) bool {
+	if s == "" || len(s) > 20 {
+		return false
+	}
+	_, err := strconv.ParseUint(s, 10, 64)
+	return err == nil
+}
+
+func listCourses(ctx context.Context, socket string, activeOnly bool) ([]native.Course, error) {
+	return collectCourses(activeOnly, func(bookmark string) (native.Response, error) {
+		params, _ := json.Marshal(map[string]string{"bookmark": bookmark})
+		return callBridge(ctx, socket, "courses.page", params)
+	})
+}
+
+func collectCourses(activeOnly bool, fetchPage func(string) (native.Response, error)) ([]native.Course, error) {
+	bookmark := ""
+	seenBookmarks := map[string]bool{}
+	seenIDs := map[string]bool{}
+	all := []native.Course{}
+	for page := 0; page < 100; page++ {
+		response, err := fetchPage(bookmark)
+		if err != nil {
+			return nil, err
+		}
+		if !response.OK {
+			if response.Error != nil {
+				return nil, fmt.Errorf("%s", response.Error.Message)
+			}
+			return nil, fmt.Errorf("request failed")
+		}
+		if response.Data == nil || response.Data.Paging == nil {
+			return nil, fmt.Errorf("invalid page")
+		}
+		for _, course := range response.Data.Courses {
+			if course.ID == "" || seenIDs[course.ID] {
+				return nil, fmt.Errorf("duplicate or missing course ID")
+			}
+			seenIDs[course.ID] = true
+			if !isCourseOffering(course.TypeCode) {
+				continue
+			}
+			if activeOnly && (course.Active == nil || !*course.Active) {
+				continue
+			}
+			all = append(all, course)
+		}
+		paging := response.Data.Paging
+		if !paging.HasMoreItems {
+			return all, nil
+		}
+		if paging.Bookmark == "" || seenBookmarks[paging.Bookmark] {
+			return nil, fmt.Errorf("invalid or repeated paging bookmark")
+		}
+		seenBookmarks[paging.Bookmark] = true
+		bookmark = paging.Bookmark
+	}
+	return nil, fmt.Errorf("course listing exceeded the 100-page safety limit")
+}
+
+func isCourseOffering(code string) bool {
+	normalized := strings.ToLower(strings.NewReplacer(" ", "", "-", "", "_", "").Replace(code))
+	return normalized == "courseoffering"
+}
+
+func writeVersions(out io.Writer, rows []native.APIVersion, format string) error {
+	return writeRecords(out, format, []string{"productCode", "latestVersion"}, rows, func() [][]string {
+		r := [][]string{}
+		for _, v := range rows {
+			r = append(r, []string{v.ProductCode, v.LatestVersion})
+		}
+		return r
+	}())
+}
+func writeCourses(out io.Writer, rows []native.Course, format string) error {
+	return writeRecords(out, format, []string{"id", "name", "code", "role", "active"}, rows, func() [][]string {
+		r := [][]string{}
+		for _, v := range rows {
+			active := ""
+			if v.Active != nil {
+				active = strconv.FormatBool(*v.Active)
+			}
+			r = append(r, []string{v.ID, v.Name, v.Code, v.Role, active})
+		}
+		return r
+	}())
+}
+func writeContent(out io.Writer, rows []native.ContentItem, format string) error {
+	return writeRecords(out, format, []string{"id", "title", "type"}, rows, func() [][]string {
+		r := [][]string{}
+		for _, v := range rows {
+			r = append(r, []string{v.ID, v.Title, v.Type})
+		}
+		return r
+	}())
+}
+func writeRecords(out io.Writer, format string, header []string, data any, records [][]string) error {
+	if format == "json" {
+		enc := json.NewEncoder(out)
+		enc.SetEscapeHTML(false)
+		return enc.Encode(data)
+	}
+	if format == "csv" {
+		for _, row := range append([][]string{header}, records...) {
+			for i, field := range row {
+				if i > 0 {
+					if _, err := io.WriteString(out, ","); err != nil {
+						return err
+					}
+				}
+				if _, err := io.WriteString(out, csvField(field)); err != nil {
+					return err
+				}
+			}
+			if _, err := io.WriteString(out, "\n"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if _, err := fmt.Fprintln(out, strings.Join(header, "\t")); err != nil {
+		return err
+	}
+	for _, row := range records {
+		if _, err := fmt.Fprintln(out, strings.Join(row, "\t")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func csvField(value string) string {
+	if !strings.ContainsAny(value, ",\"\r\n") {
+		return value
+	}
+	return "\"" + strings.ReplaceAll(value, "\"", "\"\"") + "\""
 }

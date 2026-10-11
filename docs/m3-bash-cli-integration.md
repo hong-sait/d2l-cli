@@ -18,10 +18,12 @@ d2l whoami -> private per-user Unix socket -> native host
 
 ## Install updated M3 files on macOS Chrome
 
-The repository installer now builds the native host and CLI with the extension ID embedded. It refuses to overwrite an existing `~/.local/bin/d2l` command. After confirming that path is available, run:
+The repository installer builds the native host and CLI with the extension ID embedded. A fresh install refuses to overwrite an existing `~/.local/bin/d2l` command. For an existing binary built by this project and registered to this extension ID, use `--upgrade`; the installer verifies that provenance and saves timestamped backups before replacing the files:
 
 ```sh
 ./installers/install-chrome-native-host.sh pmoonbhnkggdeollkfmnpnhjkkoioehc
+# Existing managed installation:
+./installers/install-chrome-native-host.sh pmoonbhnkggdeollkfmnpnhjkkoioehc --upgrade
 ```
 
 Reload the unpacked extension and restart Chrome. The registered native host stays at `~/.local/bin/d2l-native-host`; the CLI command is `~/.local/bin/d2l`.
@@ -40,4 +42,4 @@ Reload the unpacked extension and restart Chrome. The registered native host sta
 
 ## Current state
 
-Implementation and automated checks pass. The updated host/CLI binaries have not yet been installed, and the updated extension has not yet been reloaded in the browser; live `d2l whoami`, browser shutdown/restart recovery, and disconnected behavior remain pending manual acceptance.
+M3 was accepted by the user on 2026-10-11. Automated checks pass. The user reported that the native host connected in Edge; a live CLI `d2l whoami` and browser restart transcript were not provided, so those outcomes are not independently recorded here. The separate M4 additions are described in `m4-read-only-operations.md`.

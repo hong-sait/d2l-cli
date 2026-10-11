@@ -155,8 +155,70 @@
         message: error && error.name === "AbortError" ? "Brightspace request timed out." : "Brightspace request failed; check connectivity and sign-in." } };
     } finally { clearTimeout(timer); }
   }
+  async function fetchReadOperation(operation, params, fetchImpl) {
+    let path;
+    let target = null;
+    if (operation === "api.versions") path = "/d2l/api/versions/";
+    else if (operation === "courses.page") {
+      const bookmark = typeof params.bookmark === "string" ? params.bookmark : "";
+      target = { product: "lp", route: version => `/d2l/api/lp/${version}/enrollments/myenrollments/` + (bookmark ? `?bookmark=${encodeURIComponent(bookmark)}` : "") };
+    } else if (operation === "content.list" && typeof params.courseId === "string" && /^\d{1,20}$/.test(params.courseId)) {
+      target = { product: "le", route: version => `/d2l/api/le/${version}/${params.courseId}/content/root/` };
+    } else return { ok: false, error: { code: "invalid_request", message: "Unsupported read-only operation." } };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      if (target) {
+        const versionsResponse = await fetchImpl(BASE + "/d2l/api/versions/", { method: "GET", credentials: "include", redirect: "follow", cache: "no-store", signal: controller.signal, headers: { "Accept": "application/json" } });
+        if (versionsResponse.redirected || !versionsResponse.url.startsWith(BASE + "/") || versionsResponse.status === 401 || versionsResponse.status === 403) return { ok: false, error: { code: "auth_required", message: "Sign in to Brightspace and retry." } };
+        if (!versionsResponse.ok) return { ok: false, error: { code: versionsResponse.status === 429 ? "rate_limited" : "http_error", message: versionsResponse.status === 429 ? "Brightspace rate limit reached; retry later." : `Brightspace returned HTTP ${versionsResponse.status}.` } };
+        const versionsType = (versionsResponse.headers.get("content-type") || "").split(";")[0].trim();
+        if (!/(?:^|\/)json$/i.test(versionsType) && !/\+json$/i.test(versionsType)) return invalidData();
+        let versionsBody; try { versionsBody = await versionsResponse.json(); } catch (_) { return invalidData(); }
+        if (!Array.isArray(versionsBody)) return invalidData();
+        const product = versionsBody.find(item => item && item.ProductCode === target.product);
+        const version = product && product.LatestVersion;
+        if (typeof version !== "string" || !/^\d{1,3}\.\d{1,3}$/.test(version)) return invalidData();
+        path = target.route(version);
+      }
+      const response = await fetchImpl(BASE + path, { method: "GET", credentials: "include", redirect: "follow", cache: "no-store", signal: controller.signal, headers: { "Accept": "application/json" } });
+      if (response.redirected || !response.url.startsWith(BASE + "/")) return { ok: false, error: { code: "auth_required", message: "Sign in to Brightspace and retry." } };
+      if (response.status === 401 || response.status === 403) return { ok: false, error: { code: "auth_required", message: "Sign in to Brightspace or check course access." } };
+      if (response.status === 429) return { ok: false, error: { code: "rate_limited", message: "Brightspace rate limit reached; retry later." } };
+      if (!response.ok) return { ok: false, error: { code: "http_error", message: `Brightspace returned HTTP ${response.status}.` } };
+      const type = (response.headers.get("content-type") || "").split(";")[0].trim();
+      if (!/(?:^|\/)json$/i.test(type) && !/\+json$/i.test(type)) return { ok: false, error: { code: "invalid_response", message: "Brightspace returned a non-JSON response." } };
+      let body;
+      try { body = await response.json(); } catch (_) { return { ok: false, error: { code: "invalid_response", message: "Brightspace returned invalid JSON." } }; }
+      if (operation === "api.versions") {
+        if (!Array.isArray(body)) return invalidData();
+        const products = new Map(body.filter(x => x && (x.ProductCode === "lp" || x.ProductCode === "le")).map(x => [x.ProductCode, x]));
+        const versions = ["lp", "le"].map(productCode => ({ productCode, latestVersion: String(products.get(productCode) && products.get(productCode).LatestVersion || "") }));
+        if (versions.some(item => !/^\d{1,3}\.\d{1,3}$/.test(item.latestVersion))) return invalidData();
+        return { ok: true, data: { versions } };
+      }
+      if (operation === "courses.page") {
+        if (!body || !Array.isArray(body.Items) || !body.PagingInfo || typeof body.PagingInfo.HasMoreItems !== "boolean") return invalidData();
+        const courses = body.Items.map(x => {
+          const org = x && x.OrgUnit || {};
+          const access = x && x.Access || {};
+          const active = typeof access.IsActive === "boolean" ? access.IsActive : (typeof org.IsActive === "boolean" ? org.IsActive : (typeof (x && x.IsActive) === "boolean" ? x.IsActive : null));
+          const role = access.ClasslistRoleName || (x && x.Role && (x.Role.Name || x.Role.Code)) || "";
+          return { id: String(org.Id || ""), name: String(org.Name || ""), code: String(org.Code || ""), typeCode: String(org.Type && org.Type.Code || ""), role: String(role), active };
+        });
+        return { ok: true, data: { courses, paging: { bookmark: String(body.PagingInfo.Bookmark || ""), hasMoreItems: body.PagingInfo.HasMoreItems } } };
+      }
+      const modules = Array.isArray(body) ? body : (Array.isArray(body.Modules) ? body.Modules : null);
+      if (!modules) return invalidData();
+      const content = modules.map(x => ({ id: String(x && x.Id || ""), title: String(x && x.Title || ""), type: String(x && x.Type === 0 ? "module" : x && x.Type === 1 ? "topic" : "unknown") }));
+      return { ok: true, data: { content } };
+    } catch (error) {
+      return { ok: false, error: { code: error && error.name === "AbortError" ? "timeout" : "network_error", message: error && error.name === "AbortError" ? "Brightspace request timed out." : "Brightspace request failed; check connectivity and sign-in." } };
+    } finally { clearTimeout(timer); }
+  }
+  function invalidData() { return { ok: false, error: { code: "invalid_response", message: "Brightspace returned an unexpected response structure." } }; }
   function sanitizedReport(results, browser) {
     return JSON.stringify({ generatedAt: new Date().toISOString(), browser: String(browser || "unknown").slice(0, 80), results }, null, 2);
   }
-  return { BASE, TESTS, request, runContent, runWorker, fetchWhoami, sanitizedReport };
+  return { BASE, TESTS, request, runContent, runWorker, fetchWhoami, fetchReadOperation, sanitizedReport };
 });

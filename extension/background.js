@@ -91,15 +91,20 @@ function handleNativeMessage(message) {
 }
 
 async function handleHostRequest(message) {
-  if (!nativePort || (message.operation !== "ping" && message.operation !== "whoami") ||
+  const supported = ["ping", "whoami", "api.versions", "courses.page", "content.list"];
+  if (!nativePort || !supported.includes(message.operation) ||
       !message.params || typeof message.params !== "object" || Array.isArray(message.params) ||
-      Object.keys(message.params).length !== 0) {
+      Object.keys(message.params).length !== (message.operation === "courses.page" || message.operation === "content.list" ? 1 : 0)) {
     return;
   }
   let response;
   if (message.operation === "ping") response = { id: message.id, ok: true, data: { status: "ready" } };
-  else {
+  else if (message.operation === "whoami") {
     const result = await D2LM1.fetchWhoami(fetch);
+    response = result.ok ? { id: message.id, ok: true, data: result.data } :
+      { id: message.id, ok: false, error: result.error };
+  } else {
+    const result = await D2LM1.fetchReadOperation(message.operation, message.params, fetch);
     response = result.ok ? { id: message.id, ok: true, data: result.data } :
       { id: message.id, ok: false, error: result.error };
   }

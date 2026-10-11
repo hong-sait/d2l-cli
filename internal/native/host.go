@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`)
@@ -45,11 +46,36 @@ func DecodeExtensionResponse(body []byte) (Response, error) {
 				return Response{}, fmt.Errorf("%w: unsafe response value", ErrInvalidFrame)
 			}
 		}
+		if len(response.Data.Versions) > 16 || len(response.Data.Courses) > 2000 || len(response.Data.Content) > 2000 {
+			return Response{}, fmt.Errorf("%w: response collection exceeds limit", ErrInvalidFrame)
+		}
+		for _, item := range response.Data.Versions {
+			if !safeResponseText(item.ProductCode, 16) || !safeResponseText(item.LatestVersion, 32) {
+				return Response{}, ErrInvalidFrame
+			}
+		}
+		for _, item := range response.Data.Courses {
+			if !safeResponseText(item.ID, 32) || !safeResponseText(item.Name, 512) || !safeResponseText(item.Code, 128) || !safeResponseText(item.TypeCode, 128) || !safeResponseText(item.Role, 128) {
+				return Response{}, ErrInvalidFrame
+			}
+		}
+		for _, item := range response.Data.Content {
+			if !safeResponseText(item.ID, 32) || !safeResponseText(item.Title, 512) || !safeResponseText(item.Type, 32) {
+				return Response{}, ErrInvalidFrame
+			}
+		}
+		if response.Data.Paging != nil && (!safeResponseText(response.Data.Paging.Bookmark, 128)) {
+			return Response{}, ErrInvalidFrame
+		}
 	} else if response.Data != nil || response.Error == nil || len(response.Error.Code) > 64 ||
 		len(response.Error.Message) > 256 || strings.ContainsAny(response.Error.Code+response.Error.Message, "\r\n\x00") {
 		return Response{}, fmt.Errorf("%w: invalid error response", ErrInvalidFrame)
 	}
 	return response, nil
+}
+
+func safeResponseText(value string, max int) bool {
+	return len(value) <= max && !strings.ContainsAny(value, "\r\n\x00") && !strings.ContainsFunc(value, unicode.IsControl)
 }
 
 type Response struct {
@@ -60,9 +86,35 @@ type Response struct {
 }
 
 type ResponseData struct {
-	Status     string `json:"status,omitempty"`
-	Identifier string `json:"Identifier,omitempty"`
-	UniqueName string `json:"UniqueName,omitempty"`
+	Status     string        `json:"status,omitempty"`
+	Identifier string        `json:"Identifier,omitempty"`
+	UniqueName string        `json:"UniqueName,omitempty"`
+	Versions   []APIVersion  `json:"versions,omitempty"`
+	Courses    []Course      `json:"courses,omitempty"`
+	Content    []ContentItem `json:"content,omitempty"`
+	Paging     *Paging       `json:"paging,omitempty"`
+}
+
+type APIVersion struct {
+	ProductCode   string `json:"productCode"`
+	LatestVersion string `json:"latestVersion"`
+}
+type Course struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Code     string `json:"code,omitempty"`
+	TypeCode string `json:"typeCode,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Active   *bool  `json:"active,omitempty"`
+}
+type ContentItem struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Type  string `json:"type,omitempty"`
+}
+type Paging struct {
+	Bookmark     string `json:"bookmark,omitempty"`
+	HasMoreItems bool   `json:"hasMoreItems"`
 }
 
 type ResponseError struct {
@@ -71,14 +123,54 @@ type ResponseError struct {
 }
 
 func ValidateRequest(request Request) error {
-	if !requestIDPattern.MatchString(request.ID) || (request.Operation != "ping" && request.Operation != "whoami") || len(request.Params) == 0 {
+	if !requestIDPattern.MatchString(request.ID) || len(request.Params) == 0 {
 		return ErrInvalidFrame
 	}
 	var params map[string]json.RawMessage
 	if err := json.Unmarshal(request.Params, &params); err != nil || params == nil || len(params) != 0 {
+		if err != nil || params == nil {
+			return ErrInvalidFrame
+		}
+		var allowed []string
+		switch request.Operation {
+		case "courses.page":
+			allowed = []string{"bookmark"}
+		case "content.list":
+			allowed = []string{"courseId"}
+		default:
+			return ErrInvalidFrame
+		}
+		if len(params) != 1 || params[allowed[0]] == nil {
+			return ErrInvalidFrame
+		}
+		var value string
+		if json.Unmarshal(params[allowed[0]], &value) != nil || len(value) > 128 {
+			return ErrInvalidFrame
+		}
+		if request.Operation == "content.list" && (value == "" || !isDecimalID(value)) {
+			return ErrInvalidFrame
+		}
+		if request.Operation == "courses.page" && strings.ContainsAny(value, "\r\n\x00&") {
+			return ErrInvalidFrame
+		}
+		return nil
+	}
+	if request.Operation != "ping" && request.Operation != "whoami" && request.Operation != "api.versions" {
 		return ErrInvalidFrame
 	}
 	return nil
+}
+
+func isDecimalID(s string) bool {
+	if len(s) > 20 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Serve processes one framed request at a time until Chrome closes stdin.
@@ -132,7 +224,7 @@ func Handle(body []byte) (Response, error) {
 	if err := json.Unmarshal(request.Params, &params); err != nil || params == nil {
 		return Response{}, fmt.Errorf("%w: params must be an object", ErrInvalidFrame)
 	}
-	if request.Operation != "ping" && request.Operation != "whoami" {
+	if request.Operation != "ping" && request.Operation != "whoami" && request.Operation != "api.versions" && request.Operation != "courses.page" && request.Operation != "content.list" {
 		return Response{ID: request.ID, OK: false, Error: &ResponseError{
 			Code: "unsupported_operation", Message: "Operation is not supported.",
 		}}, nil
