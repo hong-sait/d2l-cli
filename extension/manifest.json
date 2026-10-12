@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Brightspace Student Search",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "description": "Search current-term Brightspace classlists and connect the read-only CLI bridge.",
-  "permissions": ["activeTab", "nativeMessaging"],
+  "permissions": ["activeTab", "nativeMessaging", "storage"],
   "host_permissions": ["https://learn.sait.ca/*"],
   "icons": {
     "16": "d2l-favicon.png",

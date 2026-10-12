@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -155,12 +156,23 @@ func runCLI(args []string, stdout, stderr io.Writer, socketPath string) error {
 		return writeStudents(stdout, students, format)
 	}
 	if command == "students search" {
-		matches, err := searchCurrentTermStudents(ctx, socketPath, courseID, time.Now())
+		result, err := searchCurrentTermStudents(ctx, socketPath, courseID, time.Now())
 		if err != nil {
 			fmt.Fprintln(stderr, "Could not search students: "+safeCLIErr(err))
 			return err
 		}
-		return writeStudentMatches(stdout, matches, format)
+		if !result.ExactMatchFound {
+			if len(result.Matches) == 0 {
+				fmt.Fprintln(stderr, "No exact match or similar names found.")
+			} else {
+				plural := "s"
+				if len(result.Matches) == 1 {
+					plural = ""
+				}
+				fmt.Fprintf(stderr, "No exact match found. Showing %d similar name suggestion%s.\n", len(result.Matches), plural)
+			}
+		}
+		return writeStudentMatches(stdout, result.Matches, format)
 	}
 	courses, err := listCourses(ctx, socketPath, activeOnly)
 	if err != nil {
@@ -520,7 +532,6 @@ type studentMatch struct {
 	Name      string `json:"name"`
 	CourseID  string `json:"course_id"`
 	Course    string `json:"course"`
-	Code      string `json:"code,omitempty"`
 }
 
 func validStudentNameQuery(query string) bool {
@@ -561,28 +572,147 @@ func studentNameMatches(displayName, query string) bool {
 	return true
 }
 
-func searchCurrentTermStudents(ctx context.Context, socket, query string, now time.Time) ([]studentMatch, error) {
+type studentSearchResult struct {
+	Matches         []studentMatch
+	ExactMatchFound bool
+}
+
+func nameEditDistance(left, right string) int {
+	a, b := []rune(left), []rune(right)
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i, leftRune := range a {
+		diagonal := previous[0]
+		previous[0] = i + 1
+		for j, rightRune := range b {
+			above := previous[j+1]
+			cost := 1
+			if leftRune == rightRune {
+				cost = 0
+			}
+			previous[j+1] = min(previous[j+1]+1, previous[j]+1, diagonal+cost)
+			diagonal = above
+		}
+	}
+	return previous[len(b)]
+}
+
+func similarNameScore(query, name string) (float64, bool) {
+	wanted, available := nameTokens(query), nameTokens(name)
+	if len(wanted) == 0 || len(available) == 0 {
+		return 0, false
+	}
+	used := make([]bool, len(available))
+	total := 0.0
+	for _, token := range wanted {
+		bestIndex, bestScore := -1, 0.0
+		for index, candidate := range available {
+			if used[index] {
+				continue
+			}
+			length := max(len([]rune(token)), len([]rune(candidate)))
+			distance := nameEditDistance(token, candidate)
+			threshold := 0
+			if len([]rune(token)) >= 3 {
+				threshold = min(2, max(1, len([]rune(token))/4))
+			}
+			var score float64
+			if len([]rune(token)) >= 2 && strings.HasPrefix(candidate, token) {
+				score = 0.1 + 0.1*float64(len([]rune(candidate))-len([]rune(token)))/float64(length)
+			} else if distance <= threshold {
+				score = float64(distance) / float64(length)
+			} else {
+				continue
+			}
+			if bestIndex < 0 || score < bestScore {
+				bestIndex, bestScore = index, score
+			}
+		}
+		if bestIndex < 0 {
+			return 0, false
+		}
+		used[bestIndex] = true
+		total += bestScore
+	}
+	return total, true
+}
+
+func uniqueStudentMatches(matches []studentMatch) []studentMatch {
+	unique := make([]studentMatch, 0, len(matches))
+	seen := make(map[string]int, len(matches))
+	for _, match := range matches {
+		key := strings.ToLower(strings.Join(strings.Fields(match.Name), " ")) + "\x00" + match.CourseID
+		if index, exists := seen[key]; exists {
+			if unique[index].StudentID == "" && match.StudentID != "" {
+				unique[index] = match
+			}
+			continue
+		}
+		seen[key] = len(unique)
+		unique = append(unique, match)
+	}
+	return unique
+}
+
+func selectStudentMatches(candidates []studentMatch, query string) studentSearchResult {
+	exact := make([]studentMatch, 0)
+	for _, match := range candidates {
+		if studentNameMatches(match.Name, query) {
+			exact = append(exact, match)
+		}
+	}
+	if len(exact) > 0 {
+		return studentSearchResult{Matches: uniqueStudentMatches(exact), ExactMatchFound: true}
+	}
+	type scoredMatch struct {
+		match studentMatch
+		score float64
+	}
+	similar := make([]scoredMatch, 0)
+	for _, match := range candidates {
+		if score, ok := similarNameScore(query, match.Name); ok {
+			similar = append(similar, scoredMatch{match: match, score: score})
+		}
+	}
+	sort.SliceStable(similar, func(i, j int) bool {
+		if similar[i].score != similar[j].score {
+			return similar[i].score < similar[j].score
+		}
+		return similar[i].match.Name < similar[j].match.Name
+	})
+	ordered := make([]studentMatch, 0, len(similar))
+	for _, item := range similar {
+		ordered = append(ordered, item.match)
+	}
+	unique := uniqueStudentMatches(ordered)
+	if len(unique) > 25 {
+		unique = unique[:25]
+	}
+	return studentSearchResult{Matches: unique}
+}
+
+func searchCurrentTermStudents(ctx context.Context, socket, query string, now time.Time) (studentSearchResult, error) {
 	courses, err := listCourses(ctx, socket, false)
 	if err != nil {
-		return nil, fmt.Errorf("could not list current courses")
+		return studentSearchResult{}, fmt.Errorf("could not list current courses")
 	}
 	term := strings.ToLower(currentAcademicTerm(now))
-	matches := []studentMatch{}
+	candidates := []studentMatch{}
 	for _, course := range courses {
 		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(course.Name)), term) {
 			continue
 		}
 		students, err := listStudents(ctx, socket, course.ID)
 		if err != nil {
-			return nil, fmt.Errorf("could not inspect a current-term course classlist")
+			return studentSearchResult{}, fmt.Errorf("could not inspect a current-term course classlist")
 		}
 		for _, student := range students {
-			if studentNameMatches(student.DisplayName, query) {
-				matches = append(matches, studentMatch{StudentID: student.StudentID, Name: student.DisplayName, CourseID: course.ID, Course: course.Name, Code: course.Code})
-			}
+			candidates = append(candidates, studentMatch{StudentID: student.StudentID, Name: student.DisplayName, CourseID: course.ID, Course: course.Name})
 		}
 	}
-	return matches, nil
+	return selectStudentMatches(candidates, query), nil
 }
 
 func writeStudentMatches(w io.Writer, matches []studentMatch, format string) error {
@@ -593,11 +723,11 @@ func writeStudentMatches(w io.Writer, matches []studentMatch, format string) err
 	}
 	if format == "csv" {
 		writer := csv.NewWriter(w)
-		if err := writer.Write([]string{"student_id", "name", "course_id", "course", "code"}); err != nil {
+		if err := writer.Write([]string{"student_id", "name", "course_id", "course"}); err != nil {
 			return err
 		}
 		for _, match := range matches {
-			if err := writer.Write([]string{match.StudentID, match.Name, match.CourseID, match.Course, match.Code}); err != nil {
+			if err := writer.Write([]string{match.StudentID, match.Name, match.CourseID, match.Course}); err != nil {
 				return err
 			}
 		}
@@ -605,9 +735,9 @@ func writeStudentMatches(w io.Writer, matches []studentMatch, format string) err
 		return writer.Error()
 	}
 	writer := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "student_id\tname\tcourse_id\tcourse\tcode")
+	fmt.Fprintln(writer, "student_id\tname\tcourse_id\tcourse")
 	for _, match := range matches {
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", match.StudentID, match.Name, match.CourseID, match.Course, match.Code)
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", match.StudentID, match.Name, match.CourseID, match.Course)
 	}
 	return writer.Flush()
 }

@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { TESTS, request, runContent, runWorker, fetchWhoami, fetchReadOperation, sanitizedReport } = require("./core.js");
+const { TESTS, request, runContent, runWorker, fetchWhoami, fetchReadOperation, searchStudents, SEARCH_VERSION, sanitizedReport } = require("./core.js");
 
 function response({ status = 200, type = "application/json", url = "https://learn.sait.ca/d2l/api/lp/1.63/users/whoami", body = { Identifier: "redacted" }, redirected = false } = {}) {
   return { status, ok: status >= 200 && status < 300, url, redirected,
@@ -145,4 +145,41 @@ test("read operations reject arbitrary operation names and unsafe course IDs bef
   assert.equal((await fetchReadOperation("content.list", { courseId: "1/../2" }, fetchImpl)).ok, false);
   assert.equal((await fetchReadOperation("students.list", { courseId: "1/../2" }, fetchImpl)).ok, false);
   assert.equal(calls, 0);
+});
+
+test("student search visits only distinct courses in the current term", async () => {
+  const fall = [
+    ["884171", "Fall 2026 Advanced Servers (CPSY-302-A)"],
+    ["886700", "Fall 2026 IT Service Management (CPSY-352-A)"],
+    ["887055", "Fall 2026 Introduction to Hardware (CMPH-209-C)"],
+    ["892219", "Fall 2026 Advanced Servers (CPSY-302-B)"],
+    ["900145", "Fall 2026 Advanced Servers (CPSY-302-C)"]
+  ];
+  const winter = Array.from({ length: 5 }, (_, index) => [String(916177 + index), `Winter 2027 Example (${index})`]);
+  const fallSections = fall.map(([id, name]) => [`${id}1`, name]);
+  const visited = [];
+  const fetchImpl = async url => {
+    if (url.endsWith("/d2l/api/versions/")) return response({ url, body: [
+      { ProductCode: "lp", LatestVersion: "1.63" }, { ProductCode: "le", LatestVersion: "1.99" }
+    ] });
+    if (url.includes("/enrollments/myenrollments/")) return response({ url, body: {
+      Items: [
+        ...fall.map(([id, name]) => ({ OrgUnit: { Id: id, Name: name, Type: { Code: "Course Offering" } } })),
+        ...winter.map(([id, name]) => ({ OrgUnit: { Id: id, Name: name, Type: { Code: "Course Offering" } } })),
+        ...fallSections.map(([id, name]) => ({ OrgUnit: { Id: id, Name: name, Type: { Code: "Section" } } })),
+        { OrgUnit: { Id: fall[0][0], Name: fall[0][1], Type: { Code: "Course Offering" } } }
+      ],
+      PagingInfo: { Bookmark: "", HasMoreItems: false }
+    } });
+    const match = url.match(/\/([0-9]+)\/classlist\/$/);
+    assert.ok(match, `Unexpected request: ${url}`);
+    visited.push(match[1]);
+    return response({ url, body: [] });
+  };
+  const result = await searchStudents("Jane", fetchImpl, new Date(2026, 9, 11));
+  assert.equal(result.ok, true);
+  assert.equal(result.data.searchVersion, SEARCH_VERSION);
+  assert.equal(result.data.term, "Fall 2026");
+  assert.equal(result.data.searchedCourses, 5);
+  assert.deepEqual(visited, fall.map(([id]) => id));
 });

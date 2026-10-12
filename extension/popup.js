@@ -11,6 +11,8 @@ const searchButton = document.getElementById("student-search-button");
 const searchInput = document.getElementById("student-query");
 const searchStatus = document.getElementById("student-search-status");
 const studentResultBody = document.getElementById("student-results");
+const SEARCH_CACHE_KEY = "studentSearchCache";
+let searchExpiryTimer = null;
 
 for (const [tabId, panelId] of [["search-tab", "search-panel"], ["testing-tab", "testing-panel"]]) {
   document.getElementById(tabId).addEventListener("click", () => selectTab(tabId, panelId));
@@ -97,6 +99,62 @@ function renderStudents(matches) {
   }
   return displayedMatches;
 }
+function readSearchCache() {
+  return new Promise(resolve => chrome.storage.session.get(SEARCH_CACHE_KEY, result => {
+    if (chrome.runtime.lastError) resolve(null);
+    else resolve(result && result[SEARCH_CACHE_KEY] || null);
+  }));
+}
+function writeSearchCache(cache) {
+  return new Promise(resolve => chrome.storage.session.set({ [SEARCH_CACHE_KEY]: cache }, () => resolve(!chrome.runtime.lastError)));
+}
+function removeSearchCache() {
+  return new Promise(resolve => chrome.storage.session.remove(SEARCH_CACHE_KEY, () => resolve()));
+}
+function clearSearchResult(expired) {
+  if (searchExpiryTimer) clearTimeout(searchExpiryTimer);
+  searchExpiryTimer = null;
+  studentResultBody.replaceChildren();
+  const row = document.createElement("tr");
+  const td = document.createElement("td");
+  td.colSpan = 3;
+  td.textContent = expired ? "Search result expired. Search again." : "No search yet.";
+  row.appendChild(td);
+  studentResultBody.appendChild(row);
+  searchStatus.className = "status";
+  searchStatus.textContent = expired ? "Search result expired after one minute. Run the search again." : "Open a Brightspace tab at learn.sait.ca to search.";
+}
+function showCachedSearch(cache) {
+  searchInput.value = cache.query;
+  const displayed = renderStudents(cache.matches);
+  const courseSummary = `Searched ${cache.searchedCourses} ${cache.term} course${cache.searchedCourses === 1 ? "" : "s"}.`;
+  if (cache.exactMatchFound) {
+    searchStatus.className = "status match-exact";
+    searchStatus.textContent = `${courseSummary} Found ${displayed.length} exact match${displayed.length === 1 ? "" : "es"}.`;
+  } else if (displayed.length) {
+    searchStatus.className = "status match-suggestions";
+    searchStatus.textContent = `No exact match found. Showing ${displayed.length} similar name suggestion${displayed.length === 1 ? "" : "s"}. ${courseSummary}`;
+  } else {
+    searchStatus.className = "status match-suggestions";
+    searchStatus.textContent = `No exact match or similar names found. ${courseSummary}`;
+  }
+}
+async function restoreSearchCache() {
+  const cache = await readSearchCache();
+  if (!cache) return;
+  const expiresAt = Number(cache.expiresAt);
+  if (cache.version !== D2LM1.SEARCH_VERSION || !Number.isFinite(expiresAt) || expiresAt <= Date.now() || !Array.isArray(cache.matches) ||
+      typeof cache.query !== "string" || typeof cache.term !== "string") {
+    await removeSearchCache();
+    clearSearchResult(true);
+    return;
+  }
+  showCachedSearch(cache);
+  searchExpiryTimer = setTimeout(async () => {
+    await removeSearchCache();
+    clearSearchResult(true);
+  }, expiresAt - Date.now());
+}
 function browserVersion() {
   const ua = navigator.userAgent;
   const match = ua.match(/(Edg|Chrome)\/([\d.]+)/);
@@ -104,6 +162,8 @@ function browserVersion() {
   const safari = ua.match(/Version\/([\d.]+).*Safari/);
   return safari ? `Safari ${safari[1]}` : "Browser version unavailable";
 }
+
+restoreSearchCache().catch(() => {});
 
 searchForm.addEventListener("submit", async event => {
   event.preventDefault();
@@ -113,7 +173,10 @@ searchForm.addEventListener("submit", async event => {
   searchStatus.className = "status";
   searchStatus.textContent = "Checking the active tab…";
   studentResultBody.replaceChildren();
+  if (searchExpiryTimer) clearTimeout(searchExpiryTimer);
+  searchExpiryTimer = null;
   try {
+    await removeSearchCache();
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     let activeUrl;
     try { activeUrl = new URL(tab && tab.url); } catch (_) { activeUrl = null; }
@@ -127,6 +190,10 @@ searchForm.addEventListener("submit", async event => {
       searchStatus.textContent = response.error && response.error.message || "Student search failed; check Brightspace access and retry.";
       return;
     }
+    if (!response.data || response.data.searchVersion !== D2LM1.SEARCH_VERSION) {
+      searchStatus.textContent = "The extension is still running an older search worker. Reload the extension at chrome://extensions or edge://extensions, then search again.";
+      return;
+    }
     const displayedMatches = renderStudents(response.data.matches);
     const courseSummary = `Searched ${response.data.searchedCourses} ${response.data.term} course${response.data.searchedCourses === 1 ? "" : "s"}.`;
     if (response.data.exactMatchFound) {
@@ -138,6 +205,21 @@ searchForm.addEventListener("submit", async event => {
     } else {
       searchStatus.className = "status match-suggestions";
       searchStatus.textContent = `No exact match or similar names found. ${courseSummary}`;
+    }
+    const cache = {
+      version: D2LM1.SEARCH_VERSION,
+      query,
+      term: response.data.term,
+      searchedCourses: response.data.searchedCourses,
+      exactMatchFound: response.data.exactMatchFound === true,
+      matches: displayedMatches,
+      expiresAt: Date.now() + 60_000
+    };
+    if (await writeSearchCache(cache)) {
+      searchExpiryTimer = setTimeout(async () => {
+        await removeSearchCache();
+        clearSearchResult(true);
+      }, 60_000);
     }
   } catch (_) {
     searchStatus.textContent = "Student search failed. Reload the extension and Brightspace tab, then retry.";
