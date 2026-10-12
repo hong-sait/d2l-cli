@@ -108,12 +108,14 @@ You need Windows 10 or newer, Go 1.23 or newer, and a signed-in SAIT Brightspace
 3. Register the Native Messaging host for Chrome, Edge, or both. Pass the exact ID from each browser:
 
    ```powershell
-   .\installers\install-windows-native-host.ps1 `
+   powershell.exe `
+     -ExecutionPolicy Bypass `
+     -File .\installers\install-windows-native-host.ps1 `
      -ChromeExtensionId YOUR_CHROME_EXTENSION_ID `
      -EdgeExtensionId YOUR_EDGE_EXTENSION_ID
    ```
 
-   To install for one browser, omit the other browser's parameter. For an existing installation managed by this script, add `-Upgrade`; timestamped backups are saved beside the installed files. Close Chrome and Edge before upgrading so Windows can replace any running native host executable.
+   To install for one browser, omit the other browser's parameter. For an existing installation managed by this script, add `-Upgrade`; timestamped backups are saved beside the installed files. Each upgrade installs a new host executable, so the browser can keep the previous one open. Restart the browser after upgrading to load the new host.
 
    The installer builds `d2l.exe` and a separate extension-ID-bound host for each selected browser. It installs them under `%LOCALAPPDATA%\Programs\BrightspaceCLI`, writes the Native Messaging manifests, and registers them under the current user's Chrome or Edge registry keys. Separate host builds let Chrome and Edge use different extension IDs while sharing the same per-user named-pipe bridge.
 4. Restart the selected browser. Open `https://learn.sait.ca`, sign in, and click **Test Native Messaging** in the extension popup. It should report that the host is connected.

@@ -53,9 +53,13 @@ function Get-GoBuildMetadata([string]$Path) {
     return $metadata
 }
 
-function Assert-ManagedBinary([string]$Path, [string]$ExtensionId) {
+function Assert-ManagedBinary([string]$Path, [string]$ExtensionId, [switch]$AllowUnrecognized) {
     $metadata = Get-GoBuildMetadata $Path
-    if ($metadata -notmatch '(?m)^[\t ]*path[\t ]+d2l-cli[\t ]*$') {
+    if ($metadata -notmatch '(?m)^[\t ]*path[\t ]+d2l-cli[\t ]*\r?$') {
+        if ($AllowUnrecognized) {
+            Write-Warning "Go metadata is not recognized for the existing CLI at $Path; replacing it because the selected browser registration and manifest were verified."
+            return
+        }
         throw "Refusing to replace an unrecognized binary: $Path"
     }
     if ($ExtensionId -and -not $metadata.Contains("chrome-extension://$ExtensionId/")) {
@@ -66,11 +70,16 @@ function Assert-ManagedBinary([string]$Path, [string]$ExtensionId) {
 function Assert-ManagedManifest($Registration) {
     if (-not (Test-Path -LiteralPath $Registration.ManifestPath -PathType Leaf)) { return }
     $manifest = Get-Content -Raw -LiteralPath $Registration.ManifestPath | ConvertFrom-Json
+    $browser = $Registration.Browser.ToLowerInvariant()
+    $hostName = [IO.Path]::GetFileName($manifest.path)
+    $hostDir = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($manifest.path))
     if ($manifest.name -ne 'com.sait.d2l' -or
-        [IO.Path]::GetFullPath($manifest.path) -ne [IO.Path]::GetFullPath($Registration.HostPath) -or
+        $hostDir -ne [IO.Path]::GetFullPath($installDir) -or
+        $hostName -notmatch "^d2l-native-host-$browser(?:-[0-9a-f]{32})?\.exe$" -or
         $manifest.allowed_origins -notcontains "chrome-extension://$($Registration.ExtensionId)/") {
         throw "Refusing to replace an unrecognized native host manifest: $($Registration.ManifestPath)"
     }
+    $Registration.HostPath = [IO.Path]::GetFullPath($manifest.path)
 }
 
 function Assert-ManagedRegistration($Registration) {
@@ -87,6 +96,7 @@ function Assert-ManagedRegistration($Registration) {
 }
 
 $filesToCheck = @()
+$verifiedRegistrationCount = 0
 if (Test-Path -LiteralPath $cliPath) { $filesToCheck += [pscustomobject]@{ Path = $cliPath; Id = '' } }
 foreach ($registration in $registrations) {
     if (Test-Path -LiteralPath $registration.HostPath) {
@@ -97,11 +107,15 @@ foreach ($registration in $registrations) {
         Assert-ManagedManifest $registration
     }
     Assert-ManagedRegistration $registration
+    if (Test-Path -LiteralPath $registration.RegistryPath) { $verifiedRegistrationCount++ }
 }
 if ($filesToCheck.Count -gt 0 -and -not $Upgrade) {
     throw 'An installation already exists. Use -Upgrade to replace files managed by this installer.'
 }
-foreach ($file in $filesToCheck) { Assert-ManagedBinary $file.Path $file.Id }
+foreach ($file in $filesToCheck) {
+    $allowUnrecognizedCLI = $Upgrade -and $verifiedRegistrationCount -gt 0 -and -not $file.Id
+    Assert-ManagedBinary $file.Path $file.Id -AllowUnrecognized:$allowUnrecognizedCLI
+}
 
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $buildDir = Join-Path ([IO.Path]::GetTempPath()) ("d2l-cli-build-" + [guid]::NewGuid().ToString('N'))
@@ -118,6 +132,8 @@ try {
             & go build -ldflags $ldflags -o $hostBuild .
             if ($LASTEXITCODE -ne 0) { throw "Building the $($registration.Browser) native host failed." }
             $registration | Add-Member -NotePropertyName BuildPath -NotePropertyValue $hostBuild
+            $newHostName = "d2l-native-host-$($registration.Browser.ToLowerInvariant())-$([guid]::NewGuid().ToString('N')).exe"
+            $registration | Add-Member -NotePropertyName NewHostPath -NotePropertyValue (Join-Path $installDir $newHostName)
         }
     }
     finally { Pop-Location }
@@ -133,11 +149,11 @@ try {
 
     Copy-Item -LiteralPath $cliBuild -Destination $cliPath -Force
     foreach ($registration in $registrations) {
-        Copy-Item -LiteralPath $registration.BuildPath -Destination $registration.HostPath -Force
+        Copy-Item -LiteralPath $registration.BuildPath -Destination $registration.NewHostPath
         $manifest = [ordered]@{
             name = 'com.sait.d2l'
             description = 'D2L read-only CLI native messaging host'
-            path = $registration.HostPath
+            path = $registration.NewHostPath
             type = 'stdio'
             allowed_origins = @("chrome-extension://$($registration.ExtensionId)/")
         }
