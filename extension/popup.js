@@ -6,6 +6,24 @@ const resultBody = document.getElementById("results");
 const reportBox = document.getElementById("report");
 const nativeButton = document.getElementById("native");
 const nativeMessage = document.getElementById("native-message");
+const searchForm = document.getElementById("student-search-form");
+const searchButton = document.getElementById("student-search-button");
+const searchInput = document.getElementById("student-query");
+const searchStatus = document.getElementById("student-search-status");
+const studentResultBody = document.getElementById("student-results");
+
+for (const [tabId, panelId] of [["search-tab", "search-panel"], ["testing-tab", "testing-panel"]]) {
+  document.getElementById(tabId).addEventListener("click", () => selectTab(tabId, panelId));
+}
+function selectTab(tabId, panelId) {
+  for (const [id, panel] of [["search-tab", "search-panel"], ["testing-tab", "testing-panel"]]) {
+    const selected = id === tabId;
+    document.getElementById(id).setAttribute("aria-selected", String(selected));
+    document.getElementById(id).tabIndex = selected ? 0 : -1;
+    document.getElementById(panel).hidden = !selected;
+  }
+  document.getElementById(tabId).focus();
+}
 
 function cell(row, value) {
   const td = document.createElement("td");
@@ -35,6 +53,39 @@ function sendWorker() {
     else resolve(response || { ok: false, error: "Service-worker diagnostic did not respond." });
   }));
 }
+function sendStudentSearch(query) {
+  return new Promise(resolve => chrome.runtime.sendMessage({ type: "D2L_STUDENT_SEARCH", query }, response => {
+    if (chrome.runtime.lastError) resolve({ ok: false, error: { message: "Student search service did not respond. Reload the extension and retry." } });
+    else resolve(response || { ok: false, error: { message: "Student search service did not respond." } });
+  }));
+}
+function renderStudents(matches) {
+  const unique = new Map();
+  for (const match of matches) {
+    const key = `${String(match.name || "").trim().replace(/\s+/g, " ")}\u0000${String(match.course || "").trim().replace(/\s+/g, " ")}`;
+    const previous = unique.get(key);
+    if (!previous || (!previous.studentId && match.studentId)) unique.set(key, match);
+  }
+  const displayedMatches = [...unique.values()];
+  studentResultBody.replaceChildren();
+  if (!displayedMatches.length) {
+    const row = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 3;
+    td.textContent = "No matching students found.";
+    row.appendChild(td);
+    studentResultBody.appendChild(row);
+    return displayedMatches;
+  }
+  for (const match of displayedMatches) {
+    const row = document.createElement("tr");
+    cell(row, match.studentId);
+    cell(row, match.name);
+    cell(row, match.course);
+    studentResultBody.appendChild(row);
+  }
+  return displayedMatches;
+}
 function browserVersion() {
   const ua = navigator.userAgent;
   const match = ua.match(/(Edg|Chrome)\/([\d.]+)/);
@@ -42,6 +93,34 @@ function browserVersion() {
   const safari = ua.match(/Version\/([\d.]+).*Safari/);
   return safari ? `Safari ${safari[1]}` : "Browser version unavailable";
 }
+
+searchForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  const query = searchInput.value.trim();
+  if (!query) { searchStatus.textContent = "Enter a student name to search."; return; }
+  searchButton.disabled = true;
+  searchStatus.textContent = "Checking the active tab…";
+  studentResultBody.replaceChildren();
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    let activeUrl;
+    try { activeUrl = new URL(tab && tab.url); } catch (_) { activeUrl = null; }
+    if (!activeUrl || activeUrl.origin !== D2LM1.BASE) {
+      searchStatus.textContent = "Open a Brightspace tab at https://learn.sait.ca, then search again. No requests were made.";
+      return;
+    }
+    searchStatus.textContent = "Searching current-term courses…";
+    const response = await sendStudentSearch(query);
+    if (!response.ok) {
+      searchStatus.textContent = response.error && response.error.message || "Student search failed; check Brightspace access and retry.";
+      return;
+    }
+    const displayedMatches = renderStudents(response.data.matches);
+    searchStatus.textContent = `Searched ${response.data.searchedCourses} ${response.data.term} course${response.data.searchedCourses === 1 ? "" : "s"}. Found ${displayedMatches.length} match${displayedMatches.length === 1 ? "" : "es"}.`;
+  } catch (_) {
+    searchStatus.textContent = "Student search failed. Reload the extension and Brightspace tab, then retry.";
+  } finally { searchButton.disabled = false; }
+});
 
 runButton.addEventListener("click", async () => {
   runButton.disabled = true;

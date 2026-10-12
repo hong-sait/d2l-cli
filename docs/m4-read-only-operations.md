@@ -7,7 +7,7 @@ d2l api versions
 d2l courses list [--all] [--active] [--format table|json|csv]
 d2l content list --course 6605 [--format table|json|csv]
 d2l students list --course CPSY-302-B [--format table|json|csv]
-d2l students search "Surla, Oscar" [--format table|json|csv]
+d2l students search "Doe, John" [--format table|json|csv]
 ```
 
 All API requests originate in the extension service worker, use `GET`, and include browser credentials. The extension accepts only the operation names `api.versions`, `courses.page`, `content.list`, and `students.list`; it constructs URLs from the fixed Brightspace origin and fixed route templates. Course IDs are validated as decimal digits. The CLI cannot pass an arbitrary URL or HTTP method.
@@ -16,7 +16,7 @@ All API requests originate in the extension service worker, use `GET`, and inclu
 
 `d2l students list --course` accepts an enrolled course's numeric org-unit ID or a course code such as `CPSY-302-B`, `cpsy302b`, or `302b`. Code lookup uses the current calendar term: January–April is Winter, May–August is Spring, and September–December is Fall, using the current year. A short code must uniquely identify a course in that term. If an exact section is absent, an interactive terminal asks whether to show other available sections and then requires an explicit course code or ID selection. It never silently substitutes a different section. In non-interactive use, it stops and directs the user to choose an ID from `d2l courses list`.
 
-`d2l students search NAME` checks classlists for all courses whose names begin with the current calendar term (for example, Fall 2026 during September–December 2026). It accepts comma-form or natural name order, such as `"Surla, Oscar"` or `Oscar Surla`; a single first or last name token is also supported. Multiword matching ignores order and punctuation and requires each supplied name token to appear in the display name. Output includes one row per matching course enrollment, so a student enrolled in multiple current-term courses appears more than once. The search performs read-only classlist requests for each current-term course visible to the signed-in account.
+`d2l students search NAME` checks classlists for all courses whose names begin with the current calendar term (for example, Fall 2026 during September–December 2026). It accepts comma-form or natural name order, such as `"Doe, John"` or `John Doe`; a single first or last name token is also supported. Multiword matching ignores order and punctuation and requires each supplied name token to appear in the display name. Output includes one row per matching course enrollment, so a student enrolled in multiple current-term courses appears more than once. The search performs read-only classlist requests for each current-term course visible to the signed-in account.
 
 Student records are fetched only from the verified permission-scoped [Brightspace classlist endpoint](https://docs.valence.desire2learn.com/res/enroll.html) `/d2l/api/le/{version}/{courseId}/classlist/`. The response is a JSON array; the extension caps it at 2,000 entries and projects only student IDs and display names. The displayed student ID comes from `ClasslistUser.Username` and is included only when it contains exactly nine digits. A 403/404 remains an access or visibility error; the CLI does not attempt another route or extract browser credentials. Brightspace classlist visibility and privacy settings apply to the ID and display name; either may be absent if not visible in the classlist.
 

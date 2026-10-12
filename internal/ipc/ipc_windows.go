@@ -10,6 +10,7 @@ import (
 )
 
 var ErrUnavailable = errors.New("browser bridge is disconnected or unsupported on this platform")
+var ErrBridgeInUse = errors.New("another bridge host is already running")
 
 type Handler func(context.Context, native.Request) (native.Response, error)
 

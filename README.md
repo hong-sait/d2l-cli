@@ -1,8 +1,14 @@
 # Brightspace read-only CLI
 
-`d2l` reads selected data from the SAIT Brightspace instance at `https://learn.sait.ca`. A Chrome extension makes the authenticated API requests; a Native Messaging host connects the extension to the terminal command. The CLI does not ask for a password or copy browser cookies.
+`d2l` reads selected data from the SAIT Brightspace instance at `https://learn.sait.ca`. The browser extension makes authenticated API requests; a Native Messaging host connects it to the terminal command. The CLI does not ask for a password or copy browser cookies.
 
-This repository currently supports the **CLI on macOS with Google Chrome**. The unpacked extension can also run its browser checks in Microsoft Edge. The Windows CLI bridge and Windows native-host installer are not implemented yet; see [Windows](#windows) below.
+This repository supports the **CLI on macOS with Google Chrome or Microsoft Edge**. The Windows CLI bridge and Windows native-host installer are not implemented yet; see [Windows](#windows) below.
+
+## Architecture
+
+The terminal and browser host run as separate processes built from the same Go program. The extension service worker makes fixed, credentialed Brightspace requests; browser cookies stay in the browser. The current process and transport flow is shown below.
+
+![Brightspace CLI system architecture](docs/system-architecture.svg)
 
 ## macOS: install and connect Chrome
 
@@ -33,9 +39,23 @@ You need Google Chrome, Go 1.23 or newer, and an account that can sign in to SAI
 
 The installer places `d2l` and `d2l-native-host` in `~/.local/bin/` and registers `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.sait.d2l.json`. To use the short `d2l` command in zsh, add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` and open a new terminal. Otherwise, replace `d2l` in the examples below with `~/.local/bin/d2l`.
 
+## macOS: connect Edge
+
+1. In Edge, open `edge://extensions`, turn on **Developer mode**, and load the same `extension/` directory. Copy the extension ID shown by Edge.
+2. Install or upgrade the macOS host with the Chrome procedure above, then register that host for Edge from the repository root:
+
+   ```sh
+   ./installers/register-edge-native-host.sh YOUR_EDGE_EXTENSION_ID
+   ```
+
+   This registration uses the existing `~/.local/bin/d2l-native-host` executable. Its embedded extension ID must match the Edge ID. If the IDs differ, load the same unpacked extension directory in both browsers; this script will refuse to register a host bound to another ID.
+3. Restart Edge, open and sign in to `https://learn.sait.ca`, and click **Test Native Messaging** in the extension popup. The popup should say **Native Messaging host connected**. This connection has been confirmed in both Chrome and Edge.
+
+The Edge manifest is installed at `~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.sait.d2l.json`. Chrome and Edge can both keep a Native Messaging connection open. One browser owns the CLI bridge at a time; another connected host waits for the socket to become available. For predictable account selection, keep only the browser session you intend to use open while running CLI commands.
+
 ## CLI commands
 
-The examples assume `d2l` is on your `PATH`. All API operations are read-only and use the signed-in Brightspace session in Chrome. Output defaults to a tab-delimited table. Where offered, `--format` accepts `table`, `json`, or `csv`.
+The examples assume `d2l` is on your `PATH`. All API operations are read-only and use the signed-in Brightspace session in the browser that owns the CLI bridge. Output defaults to a tab-delimited table. Where offered, `--format` accepts `table`, `json`, or `csv`.
 
 | Command | Result |
 | --- | --- |
@@ -77,13 +97,13 @@ Run `d2l --help` for a short command summary. Errors go to standard error and fa
 
 The Manifest V3 extension can be loaded in Chrome or Edge through `chrome://extensions` or `edge://extensions`. With Developer mode enabled, select **Load unpacked**, choose `extension/`, open an authenticated `https://learn.sait.ca` tab, and use **Run read-only tests** in the popup. Reload a Brightspace tab after loading or updating the extension.
 
-The **terminal CLI is not available on Windows yet**. The current CLI-to-host connection uses a Unix socket; `internal/ipc/ipc_windows.go` returns an unsupported-platform error. This repository has no Windows native-host registration installer. Building the Go executable for Windows does not make `d2l status`, course listing, or student commands work there. On macOS, the supplied installer registers Chrome only; Edge CLI installation is not provided.
+The **terminal CLI is not available on Windows yet**. The current CLI-to-host connection uses a Unix socket; `internal/ipc/ipc_windows.go` returns an unsupported-platform error. This repository has no Windows native-host registration installer. Building the Go executable for Windows does not make `d2l status`, course listing, or student commands work there.
 
 ## Troubleshooting
 
-- **`Browser bridge: disconnected`**: Keep Chrome open on a signed-in Brightspace tab. Check **Test Native Messaging**, then restart Chrome and retry. If you updated the source, run the installer with `--upgrade` and reload the unpacked extension.
-- **Native host unavailable**: Confirm that the ID passed to the installer matches the ID on `chrome://extensions`. The native-host manifest allows that exact extension ID only.
-- **Sign-in required**: Sign in through Brightspace in Chrome and retry. The CLI cannot authenticate from a closed browser or import session cookies.
+- **`Browser bridge: disconnected`**: Keep Chrome or Edge open on a signed-in Brightspace tab. Check **Test Native Messaging**, then restart that browser and retry. If you updated the source, run the Chrome installer with `--upgrade` and reload the unpacked extension.
+- **Native host unavailable**: Confirm that the registered extension ID matches the ID on `chrome://extensions` or `edge://extensions`. The native-host manifest allows that exact extension ID only. On macOS Edge, run `register-edge-native-host.sh` after installing the Chrome host.
+- **Sign-in required**: Sign in through Brightspace in the connected browser and retry. The CLI cannot authenticate from a closed browser or import session cookies.
 - **Course or classlist access denied**: Use a course you can open in Brightspace. The CLI follows the same account permissions as the browser.
 - **Course code ambiguous or missing**: Use `d2l courses list` to find the numeric course ID, then pass it to `--course`.
 

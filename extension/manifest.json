@@ -1,11 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "Brightspace Read-only CLI Bridge",
-  "version": "0.2.0",
-  "description": "Read-only Brightspace API checks and CLI bridge for approved routes.",
+  "name": "Brightspace Student Search",
+  "version": "0.3.0",
+  "description": "Search current-term Brightspace classlists and connect the read-only CLI bridge.",
   "permissions": ["activeTab", "nativeMessaging"],
   "host_permissions": ["https://learn.sait.ca/*"],
-  "action": { "default_title": "Brightspace M1 checks", "default_popup": "popup.html" },
+  "icons": {
+    "16": "d2l-favicon.png",
+    "32": "d2l-favicon.png",
+    "48": "d2l-favicon.png",
+    "128": "d2l-favicon.png"
+  },
+  "action": { "default_title": "Brightspace Student Search", "default_popup": "popup.html", "default_icon": "d2l-favicon.png" },
   "background": { "service_worker": "background.js" },
   "content_scripts": [{
     "matches": ["https://learn.sait.ca/*"],

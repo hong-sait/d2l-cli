@@ -17,6 +17,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     requestNative("ping").then(result => sendResponse(result));
     return true;
   }
+  if (message.type === "D2L_STUDENT_SEARCH") {
+    if (typeof message.query !== "string" || message.query.length > 128) {
+      sendResponse({ ok: false, error: { message: "Enter a student name (up to 128 characters)." } });
+      return;
+    }
+    D2LM1.searchStudents(message.query, fetch).then(sendResponse)
+      .catch(() => sendResponse({ ok: false, error: { message: "Student search failed; check Brightspace access and retry." } }));
+    return true;
+  }
 });
 
 chrome.runtime.onStartup.addListener(ensureNativePort);

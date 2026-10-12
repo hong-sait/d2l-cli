@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"d2l-cli/internal/ipc"
 	"d2l-cli/internal/native"
@@ -46,7 +47,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, socketPath string) 
 	}()
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- ipc.Serve(ctx, socketPath, func(callCtx context.Context, request native.Request) (native.Response, error) {
+		handleCall := func(callCtx context.Context, request native.Request) (native.Response, error) {
 			reply := make(chan native.Response, 1)
 			select {
 			case requests <- localCall{request: request, reply: reply}:
@@ -71,7 +72,22 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, socketPath string) 
 			case <-ctx.Done():
 				return native.Response{}, io.EOF
 			}
-		})
+		}
+		for {
+			err := ipc.Serve(ctx, socketPath, handleCall)
+			if !errors.Is(err, ipc.ErrBridgeInUse) {
+				serverDone <- err
+				return
+			}
+			// Another browser owns the CLI socket. Keep this native port
+			// connected and claim the socket when that browser exits.
+			select {
+			case <-ctx.Done():
+				serverDone <- nil
+				return
+			case <-time.After(time.Second):
+			}
+		}
 	}()
 	pending := make(map[string]pendingCall)
 	var writeMu sync.Mutex

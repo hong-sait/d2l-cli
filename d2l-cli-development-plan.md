@@ -27,31 +27,11 @@ Use documented Brightspace APIs when available. Do not bypass institutional cont
 
 ## 3. Architecture
 
-```text
-Bash terminal
-    |
-    v
-Go executable: d2l (CLI mode)
-    |
-    v
-Authenticated local IPC broker (same Go executable, separate process/mode)
-    ^
-    |  IPC, request IDs, timeouts
-    v
-Go executable: d2l native-host (launched by browser)
-    ^
-    |  Chrome/Edge Native Messaging (length-prefixed JSON)
-    v
-Manifest V3 extension service worker
-    |
-    v
-Brightspace content script / permitted page context
-    |
-    v
-https://learn.sait.ca/d2l/api/...
-```
+![Current system architecture](docs/system-architecture.svg)
 
-Chrome/Edge starts the native messaging host, not the CLI. Design a local broker so an independently launched CLI can send requests to a browser-connected host. Prefer a permission-restricted Unix domain socket on Unix-like systems; implement an appropriate Windows IPC backend when targeting Windows. Define a secure broker lifecycle, single-instance behavior, disconnection recovery, and request routing before writing production code. Native host stdout is exclusively for protocol frames; diagnostics go to stderr.
+The installed CLI and browser-launched native host are separate processes built from the same Go program. The CLI sends validated operations over a protected per-user Unix domain socket. The native host relays them over Chrome/Edge Native Messaging to the Manifest V3 service worker, which performs the fixed, credentialed HTTPS GET request against `https://learn.sait.ca`. The content script is used for the manual M1 feasibility checks; CLI operations run through the service worker. Host stdout is reserved for protocol frames and diagnostics go to stderr.
+
+On macOS, Chrome and Edge each launch their own host process. One host owns the CLI socket; another connected host waits for it to become available. Windows extension checks work, but the Windows CLI IPC backend and host installer remain unimplemented.
 
 ## 4. Technology decisions
 

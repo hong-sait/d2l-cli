@@ -22,6 +22,7 @@ import (
 const maxFrame = 64 << 10
 
 var ErrUnavailable = errors.New("browser bridge is disconnected")
+var ErrBridgeInUse = errors.New("another bridge host is already running")
 
 type Handler func(context.Context, native.Request) (native.Response, error)
 
@@ -136,7 +137,7 @@ func listenSecure(path string) (net.Listener, error) {
 		conn, dialErr := net.DialTimeout("unix", path, 200*time.Millisecond)
 		if dialErr == nil {
 			conn.Close()
-			return nil, errors.New("another bridge host is already running")
+			return nil, ErrBridgeInUse
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, fmt.Errorf("remove stale bridge socket: %w", err)

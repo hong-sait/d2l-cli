@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1130" viewBox="0 0 1280 1130" role="img" aria-labelledby="title description">
+  <title id="title">Brightspace read-only CLI system architecture</title>
+  <desc id="description">The terminal CLI process sends allowlisted requests over a protected Unix domain socket to a separate browser-launched native host process. The host and the Manifest V3 extension service worker exchange framed JSON over Native Messaging. The service worker makes credentialed HTTPS GET requests to the fixed Brightspace origin. Chrome and Edge can each connect; one host owns the CLI socket while another waits.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-start" markerWidth="10" markerHeight="10" refX="2" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M10,0 L0,5 L10,10 z" fill="#475569"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .title { font-size: 34px; font-weight: 700; }
+      .subtitle { font-size: 17px; fill: #586579; }
+      .heading { font-size: 23px; font-weight: 650; }
+      .body { font-size: 16px; fill: #455166; }
+      .small { font-size: 14px; fill: #536176; }
+      .card { stroke: #cad3df; stroke-width: 2; rx: 18; }
+      .transport { stroke: #475569; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .duplex { stroke: #475569; stroke-width: 3; fill: none; marker-start: url(#arrow-start); marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1280" height="1130" fill="#ffffff"/>
+  <text x="640" y="58" text-anchor="middle" class="title">Brightspace read-only CLI</text>
+  <text x="640" y="88" text-anchor="middle" class="subtitle">Separate processes; browser session stays in Chrome or Edge</text>
+
+  <rect x="250" y="120" width="780" height="106" class="card" fill="#f8fafc"/>
+  <text x="640" y="162" text-anchor="middle" class="heading">Terminal</text>
+  <text x="640" y="192" text-anchor="middle" class="body">d2l courses list · d2l content list · d2l students list</text>
+
+  <path d="M640 226 L640 258" class="transport"/>
+  <text x="665" y="249" class="small">command + options</text>
+
+  <rect x="250" y="268" width="780" height="112" class="card" fill="#eaf1ff" stroke="#9bb8ee"/>
+  <text x="640" y="310" text-anchor="middle" class="heading">Go CLI process</text>
+  <text x="640" y="340" text-anchor="middle" class="body">Validates commands · formats table, JSON, or CSV</text>
+  <text x="640" y="363" text-anchor="middle" class="small">One invocation per terminal command</text>
+
+  <path d="M640 380 L640 418" class="duplex"/>
+  <text x="665" y="408" class="small">local IPC · framed JSON</text>
+
+  <rect x="250" y="428" width="780" height="105" class="card" fill="#f1f5f9"/>
+  <text x="640" y="469" text-anchor="middle" class="heading">Protected Unix domain socket</text>
+  <text x="640" y="500" text-anchor="middle" class="body">Per-user path and restrictive permissions · macOS CLI transport</text>
+
+  <path d="M640 533 L640 570" class="duplex"/>
+
+  <rect x="170" y="580" width="940" height="143" class="card" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="640" y="615" text-anchor="middle" class="heading">Native host process · same Go program, separate process</text>
+  <rect x="205" y="635" width="420" height="66" rx="12" fill="#e7f5ed" stroke="#a8d7ba" stroke-width="1.5"/>
+  <text x="415" y="664" text-anchor="middle" font-size="18" font-weight="650">Active host</text>
+  <text x="415" y="687" text-anchor="middle" class="small">Owns the CLI socket and relays requests</text>
+  <rect x="655" y="635" width="420" height="66" rx="12" fill="#fff7e8" stroke="#edcf91" stroke-width="1.5"/>
+  <text x="865" y="664" text-anchor="middle" font-size="18" font-weight="650">Other browser host, if connected</text>
+  <text x="865" y="687" text-anchor="middle" class="small">Stays connected and waits for the socket</text>
+
+  <path d="M640 723 L640 760" class="duplex"/>
+  <text x="665" y="750" class="small">Native Messaging · length-prefixed JSON</text>
+
+  <rect x="170" y="770" width="940" height="135" class="card" fill="#f3efff" stroke="#c7b5ef"/>
+  <text x="640" y="807" text-anchor="middle" class="heading">Chrome or Edge · Manifest V3 extension</text>
+  <text x="640" y="839" text-anchor="middle" class="body">Service worker checks fixed operations and routes approved requests</text>
+  <text x="640" y="870" text-anchor="middle" class="small">Browser owns the signed-in session; secrets and cookies are not sent to the CLI</text>
+
+  <path d="M640 905 L640 943" class="duplex"/>
+  <text x="665" y="933" class="small">credentialed HTTPS GET · fixed origin and routes</text>
+
+  <rect x="250" y="953" width="780" height="105" class="card" fill="#eaf7ef" stroke="#9fd4b0"/>
+  <text x="640" y="995" text-anchor="middle" class="heading">Brightspace REST API</text>
+  <text x="640" y="1027" text-anchor="middle" class="body">https://learn.sait.ca · read-only allowlisted endpoints</text>
+
+  <rect x="130" y="1075" width="1020" height="38" rx="10" fill="#fff7e8" stroke="#edcf91"/>
+  <text x="640" y="1100" text-anchor="middle" class="small">Platform note: Windows CLI IPC is not implemented. With two browsers open, whichever host owns the socket serves CLI requests.</text>
+</svg>

@@ -229,9 +229,65 @@
       return { ok: false, error: { code: error && error.name === "AbortError" ? "timeout" : "network_error", message: error && error.name === "AbortError" ? "Brightspace request timed out." : "Brightspace request failed; check connectivity and sign-in." } };
     } finally { clearTimeout(timer); }
   }
+  function currentTerm(now) {
+    const date = now instanceof Date ? now : new Date();
+    const month = date.getMonth() + 1;
+    const season = month <= 4 ? "Winter" : month <= 8 ? "Sprint" : "Fall";
+    return `${season} ${date.getFullYear()}`;
+  }
+  function normalizeSearch(value) {
+    return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  }
+  async function searchStudents(query, fetchImpl, now) {
+    const normalized = normalizeSearch(query);
+    if (!normalized || normalized.length > 128) return { ok: false, error: { message: "Enter a student name (up to 128 characters)." } };
+    const terms = normalized.split(/\s+/).filter(Boolean);
+    const term = currentTerm(now);
+    const courses = [];
+    let bookmark = "";
+    for (let page = 0; page < 100; page++) {
+      const response = await fetchReadOperation("courses.page", { bookmark }, fetchImpl);
+      if (!response.ok) return response;
+      const data = response.data;
+      courses.push(...data.courses.filter(course => normalizeSearch(course.name).startsWith(normalizeSearch(term))));
+      if (!data.paging.hasMoreItems) break;
+      if (!data.paging.bookmark || data.paging.bookmark === bookmark) {
+        return { ok: false, error: { code: "invalid_response", message: "Brightspace course list pagination did not advance." } };
+      }
+      bookmark = data.paging.bookmark;
+      if (page === 99) return { ok: false, error: { code: "limit_exceeded", message: "Too many course pages to search safely." } };
+    }
+    const matches = [];
+    for (const course of courses) {
+      if (!/^\d{1,20}$/.test(course.id)) continue;
+      const response = await fetchReadOperation("students.list", { courseId: course.id }, fetchImpl);
+      if (!response.ok) return { ...response, error: { ...response.error, message: `${response.error.message} Course: ${course.code || course.name}.` } };
+      const courseMatches = new Map();
+      for (const student of response.data.students) {
+        const name = normalizeSearch(student.displayName);
+        if (terms.every(token => name.includes(token))) {
+          const match = { studentId: student.studentId, name: student.displayName, courseId: course.id,
+            course: course.name, code: course.code };
+          let group = courseMatches.get(name);
+          if (!group) {
+            group = { identified: new Map(), unidentified: null };
+            courseMatches.set(name, group);
+          }
+          if (match.studentId) group.identified.set(match.studentId, match);
+          else if (!group.unidentified) group.unidentified = match;
+        }
+      }
+      for (const group of courseMatches.values()) {
+        matches.push(...(group.identified.size ? group.identified.values() : group.unidentified ? [group.unidentified] : []));
+      }
+    }
+    matches.sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code));
+    return { ok: true, data: { term, searchedCourses: courses.length, matches } };
+  }
   function invalidData() { return { ok: false, error: { code: "invalid_response", message: "Brightspace returned an unexpected response structure." } }; }
   function sanitizedReport(results, browser) {
     return JSON.stringify({ generatedAt: new Date().toISOString(), browser: String(browser || "unknown").slice(0, 80), results }, null, 2);
   }
-  return { BASE, TESTS, request, runContent, runWorker, fetchWhoami, fetchReadOperation, sanitizedReport };
+  return { BASE, TESTS, request, runContent, runWorker, fetchWhoami, fetchReadOperation, searchStudents, sanitizedReport };
 });
