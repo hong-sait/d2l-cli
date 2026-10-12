@@ -29,9 +29,9 @@ Use documented Brightspace APIs when available. Do not bypass institutional cont
 
 ![Current system architecture](docs/system-architecture.svg)
 
-The installed CLI and browser-launched native host are separate processes built from the same Go program. The CLI sends validated operations over a protected per-user Unix domain socket. The native host relays them over Chrome/Edge Native Messaging to the Manifest V3 service worker, which performs the fixed, credentialed HTTPS GET request against `https://learn.sait.ca`. The content script is used for the manual M1 feasibility checks; CLI operations run through the service worker. Host stdout is reserved for protocol frames and diagnostics go to stderr.
+The installed CLI and browser-launched native host are separate processes built from the same Go program. The CLI sends validated operations over protected per-user local IPC (Unix domain socket on macOS/Linux and named pipe on Windows). The native host relays them over Chrome/Edge Native Messaging to the Manifest V3 service worker, which performs the fixed, credentialed HTTPS GET request against `https://learn.sait.ca`. The content script is used for the manual M1 feasibility checks; CLI operations run through the service worker. Host stdout is reserved for protocol frames and diagnostics go to stderr.
 
-On macOS, Chrome and Edge each launch their own host process. One host owns the CLI socket; another connected host waits for it to become available. Windows extension checks work, but the Windows CLI IPC backend and host installer remain unimplemented.
+On macOS, Chrome and Edge each launch their own host process. One host owns the CLI IPC endpoint; another connected host waits for it to become available. Windows uses a named pipe and a per-user installer that registers browser-specific manifests under HKCU.
 
 ## 4. Technology decisions
 

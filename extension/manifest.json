@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Brightspace Student Search",
+  "name": "Brightspace D2L Helper",
   "version": "0.3.2",
-  "description": "Search current-term Brightspace classlists and connect the read-only CLI bridge.",
+  "description": "Helpful tools for SAIT Brightspace, including student search and the read-only CLI bridge.",
   "permissions": ["activeTab", "nativeMessaging", "storage"],
   "host_permissions": ["https://learn.sait.ca/*"],
   "icons": {
@@ -11,7 +11,7 @@
     "48": "d2l-favicon.png",
     "128": "d2l-favicon.png"
   },
-  "action": { "default_title": "Brightspace Student Search", "default_popup": "popup.html", "default_icon": "d2l-favicon.png" },
+  "action": { "default_title": "Brightspace D2L Helper", "default_popup": "popup.html", "default_icon": "d2l-favicon.png" },
   "background": { "service_worker": "background.js" },
   "content_scripts": [{
     "matches": ["https://learn.sait.ca/*"],

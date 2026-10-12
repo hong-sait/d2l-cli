@@ -29,7 +29,7 @@ type pendingCall struct {
 }
 
 // Serve multiplexes the browser's Native Messaging stream with the per-user
-// Unix socket used by CLI processes.
+// local IPC endpoint used by CLI processes (Unix socket or Windows named pipe).
 func Serve(ctx context.Context, in io.Reader, out io.Writer, socketPath string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -79,8 +79,8 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, socketPath string) 
 				serverDone <- err
 				return
 			}
-			// Another browser owns the CLI socket. Keep this native port
-			// connected and claim the socket when that browser exits.
+			// Another browser owns the CLI IPC endpoint. Keep this native port
+			// connected and claim it when that browser exits.
 			select {
 			case <-ctx.Done():
 				serverDone <- nil

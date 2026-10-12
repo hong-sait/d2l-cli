@@ -14,7 +14,7 @@ M2 adds a small Go host and a popup **Test Native Messaging** action. The only a
 
 The macOS Chrome installer installs a user-scoped `d2l-native-host` binary and writes Chrome's native-host registration file. It was run after the user approved installation, using the extension ID shown in Chrome.
 
-The registered executable is `~/.local/bin/d2l-native-host`; the manifest is `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.sait.d2l.json`. The manifest uses an absolute executable path and allows only the exact extension origin `chrome-extension://pmoonbhnkggdeollkfmnpnhjkkoioehc/`. The script does not register Edge or Windows/Linux hosts. To register again after changing the extension ID, load the unpacked extension, copy its current ID from the extension details page, and run `./installers/install-chrome-native-host.sh <extension-id>` from the repository root.
+The registered executable is `~/.local/bin/d2l-native-host`; the manifest is `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.sait.d2l.json`. The manifest uses an absolute executable path and allows only the exact extension origin `chrome-extension://pmoonbhnkggdeollkfmnpnhjkkoioehc/`. To register again after changing the extension ID, load the unpacked extension and copy its current ID from the extension details page. On macOS, run `./installers/install-chrome-native-host.sh <extension-id>`; on Windows, use `installers\install-windows-native-host.ps1` from PowerShell as documented in the README. Windows installs separate host executables for Chrome and Edge so each can be bound to its own extension ID.
 
 ## Verification and observed result
 
