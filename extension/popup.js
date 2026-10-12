@@ -81,7 +81,18 @@ function renderStudents(matches) {
     const row = document.createElement("tr");
     cell(row, match.studentId);
     cell(row, match.name);
-    cell(row, match.course);
+    const courseCell = document.createElement("td");
+    if (/^\d{1,20}$/.test(String(match.courseId || ""))) {
+      const link = document.createElement("a");
+      link.href = `${D2LM1.BASE}/d2l/home/${match.courseId}`;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = match.course || "Open course";
+      courseCell.appendChild(link);
+    } else {
+      courseCell.textContent = match.course || "";
+    }
+    row.appendChild(courseCell);
     studentResultBody.appendChild(row);
   }
   return displayedMatches;
@@ -99,6 +110,7 @@ searchForm.addEventListener("submit", async event => {
   const query = searchInput.value.trim();
   if (!query) { searchStatus.textContent = "Enter a student name to search."; return; }
   searchButton.disabled = true;
+  searchStatus.className = "status";
   searchStatus.textContent = "Checking the active tab…";
   studentResultBody.replaceChildren();
   try {
@@ -116,7 +128,17 @@ searchForm.addEventListener("submit", async event => {
       return;
     }
     const displayedMatches = renderStudents(response.data.matches);
-    searchStatus.textContent = `Searched ${response.data.searchedCourses} ${response.data.term} course${response.data.searchedCourses === 1 ? "" : "s"}. Found ${displayedMatches.length} match${displayedMatches.length === 1 ? "" : "es"}.`;
+    const courseSummary = `Searched ${response.data.searchedCourses} ${response.data.term} course${response.data.searchedCourses === 1 ? "" : "s"}.`;
+    if (response.data.exactMatchFound) {
+      searchStatus.className = "status match-exact";
+      searchStatus.textContent = `${courseSummary} Found ${displayedMatches.length} exact match${displayedMatches.length === 1 ? "" : "es"}.`;
+    } else if (displayedMatches.length) {
+      searchStatus.className = "status match-suggestions";
+      searchStatus.textContent = `No exact match found. Showing ${displayedMatches.length} similar name suggestion${displayedMatches.length === 1 ? "" : "s"}. ${courseSummary}`;
+    } else {
+      searchStatus.className = "status match-suggestions";
+      searchStatus.textContent = `No exact match or similar names found. ${courseSummary}`;
+    }
   } catch (_) {
     searchStatus.textContent = "Student search failed. Reload the extension and Brightspace tab, then retry.";
   } finally { searchButton.disabled = false; }

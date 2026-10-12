@@ -239,6 +239,54 @@
     return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
       .toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   }
+  function editDistance(left, right) {
+    const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+    for (let i = 1; i <= left.length; i++) {
+      let diagonal = previous[0];
+      previous[0] = i;
+      for (let j = 1; j <= right.length; j++) {
+        const above = previous[j];
+        previous[j] = Math.min(previous[j] + 1, previous[j - 1] + 1,
+          diagonal + (left[i - 1] === right[j - 1] ? 0 : 1));
+        diagonal = above;
+      }
+    }
+    return previous[right.length];
+  }
+  function fuzzyNameScore(queryTerms, name) {
+    const nameTerms = name.split(/\s+/).filter(Boolean);
+    const used = new Set();
+    let score = 0;
+    for (const queryTerm of queryTerms) {
+      let best = null;
+      for (let i = 0; i < nameTerms.length; i++) {
+        if (used.has(i)) continue;
+        const candidate = nameTerms[i];
+        const length = Math.max(queryTerm.length, candidate.length);
+        const distance = editDistance(queryTerm, candidate);
+        const threshold = queryTerm.length < 3 ? 0 : Math.min(2, Math.max(1, Math.floor(queryTerm.length * 0.25)));
+        const score = queryTerm.length >= 2 && candidate.startsWith(queryTerm)
+          ? 0.1 + 0.1 * (candidate.length - queryTerm.length) / length
+          : distance <= threshold ? distance / length : null;
+        if (score !== null && (!best || score < best.score)) best = { index: i, score };
+      }
+      if (!best) return null;
+      used.add(best.index);
+      score += best.score;
+    }
+    return score;
+  }
+  function dedupeStudentMatches(matches) {
+    const unique = new Map();
+    for (const match of matches) {
+      const name = String(match.name || "").trim().replace(/\s+/g, " ");
+      const course = String(match.course || "").trim().replace(/\s+/g, " ");
+      const key = `${name.toLocaleLowerCase()}\u0000${course.toLocaleLowerCase()}`;
+      const previous = unique.get(key);
+      if (!previous || (!previous.studentId && match.studentId)) unique.set(key, match);
+    }
+    return [...unique.values()];
+  }
   async function searchStudents(query, fetchImpl, now) {
     const normalized = normalizeSearch(query);
     if (!normalized || normalized.length > 128) return { ok: false, error: { message: "Enter a student name (up to 128 characters)." } };
@@ -258,32 +306,29 @@
       bookmark = data.paging.bookmark;
       if (page === 99) return { ok: false, error: { code: "limit_exceeded", message: "Too many course pages to search safely." } };
     }
-    const matches = [];
+    const candidates = [];
     for (const course of courses) {
       if (!/^\d{1,20}$/.test(course.id)) continue;
       const response = await fetchReadOperation("students.list", { courseId: course.id }, fetchImpl);
       if (!response.ok) return { ...response, error: { ...response.error, message: `${response.error.message} Course: ${course.code || course.name}.` } };
-      const courseMatches = new Map();
       for (const student of response.data.students) {
         const name = normalizeSearch(student.displayName);
-        if (terms.every(token => name.includes(token))) {
-          const match = { studentId: student.studentId, name: student.displayName, courseId: course.id,
-            course: course.name, code: course.code };
-          let group = courseMatches.get(name);
-          if (!group) {
-            group = { identified: new Map(), unidentified: null };
-            courseMatches.set(name, group);
-          }
-          if (match.studentId) group.identified.set(match.studentId, match);
-          else if (!group.unidentified) group.unidentified = match;
-        }
-      }
-      for (const group of courseMatches.values()) {
-        matches.push(...(group.identified.size ? group.identified.values() : group.unidentified ? [group.unidentified] : []));
+        candidates.push({ studentId: student.studentId, name: student.displayName, courseId: course.id,
+          course: course.name, code: course.code, normalizedName: name });
       }
     }
-    matches.sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code));
-    return { ok: true, data: { term, searchedCourses: courses.length, matches } };
+    const exactMatches = dedupeStudentMatches(candidates.filter(match => {
+      const nameTerms = match.normalizedName.split(/\s+/);
+      return terms.every(token => nameTerms.includes(token));
+    }));
+    if (exactMatches.length) {
+      return { ok: true, data: { term, searchedCourses: courses.length, exactMatchFound: true, matches: exactMatches } };
+    }
+    const similar = candidates.map(match => ({ match, score: fuzzyNameScore(terms, match.normalizedName) }))
+      .filter(item => item.score !== null)
+      .sort((a, b) => a.score - b.score || a.match.name.localeCompare(b.match.name));
+    const suggestions = dedupeStudentMatches(similar.map(item => item.match)).slice(0, 25);
+    return { ok: true, data: { term, searchedCourses: courses.length, exactMatchFound: false, matches: suggestions } };
   }
   function invalidData() { return { ok: false, error: { code: "invalid_response", message: "Brightspace returned an unexpected response structure." } }; }
   function sanitizedReport(results, browser) {
