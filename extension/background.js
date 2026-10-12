@@ -91,10 +91,10 @@ function handleNativeMessage(message) {
 }
 
 async function handleHostRequest(message) {
-  const supported = ["ping", "whoami", "api.versions", "courses.page", "content.list"];
+  const supported = ["ping", "whoami", "api.versions", "courses.page", "content.list", "students.page"];
   if (!nativePort || !supported.includes(message.operation) ||
       !message.params || typeof message.params !== "object" || Array.isArray(message.params) ||
-      Object.keys(message.params).length !== (message.operation === "courses.page" || message.operation === "content.list" ? 1 : 0)) {
+      Object.keys(message.params).length !== (message.operation === "students.page" ? 2 : message.operation === "courses.page" || message.operation === "content.list" ? 1 : 0)) {
     return;
   }
   let response;

@@ -1,16 +1,21 @@
 # M4 — Read-only API operations
 
-M4 adds three allowlisted read operations to the existing Chrome/Edge Native Messaging bridge:
+M4 exposes allowlisted read-only operations through the existing Chrome/Edge Native Messaging bridge:
 
 ```sh
 d2l api versions
 d2l courses list [--active] [--format table|json|csv]
 d2l content list --course 6605 [--format table|json|csv]
+d2l students list --course CPSY-302-B [--format table|json|csv]
 ```
 
-All API requests originate in the extension service worker, use `GET`, and include browser credentials. The extension accepts only the operation names `api.versions`, `courses.page`, and `content.list`; it constructs URLs from the fixed Brightspace origin and fixed route templates. The course ID is validated as decimal digits. The CLI cannot pass an arbitrary URL or HTTP method.
+All API requests originate in the extension service worker, use `GET`, and include browser credentials. The extension accepts only the operation names `api.versions`, `courses.page`, `content.list`, and `students.page`; it constructs URLs from the fixed Brightspace origin and fixed route templates. Course IDs are validated as decimal digits. The CLI cannot pass an arbitrary URL or HTTP method.
 
-`api versions` discovers the current `lp` and `le` versions from `/d2l/api/versions/`. Course listing and content listing do their own version discovery before calling the corresponding fixed route. The extension returns only course ID, name, code, type code, role, and active state; root content returns only item ID, title, and module/topic type. User records and raw API response bodies are not sent over Native Messaging.
+`api versions` discovers the current `lp` and `le` versions from `/d2l/api/versions/`. Course listing, content listing, and student listing do their own version discovery before calling the corresponding fixed route. The extension returns only course ID, name, code, type code, role, and active state for course listing; root content returns only item ID, title, and module/topic type. Student listing uses the documented paged classlist API, filters for classlist roles labeled `Learner` or `Student`, and returns the nine-digit `Username` as the student ID plus the display name. Other user fields and raw API response bodies are not sent over Native Messaging.
+
+`d2l students list --course` accepts an enrolled course's numeric org-unit ID or a course code such as `CPSY-302-B`, `cpsy302b`, or `302b`. Code lookup uses the current calendar term: January–April is Winter, May–August is Spring, and September–December is Fall, using the current year. A short code must uniquely identify a course in that term. If an exact section is absent, an interactive terminal asks whether to show other available sections and then requires an explicit course code or ID selection. It never silently substitutes a different section. In non-interactive use, it stops and directs the user to choose an ID from `d2l courses list`.
+
+Student records are fetched only from the permission-scoped [Brightspace paged classlist endpoint](https://docs.valence.desire2learn.com/res/enroll.html) `/d2l/api/le/{version}/{courseId}/classlist/paged/`. The CLI follows its `Objects`/`Next` pages with duplicate detection and page/record limits. Each next link must resolve to the same Brightspace origin and the same course classlist route; only the bookmark query is forwarded. The displayed student ID comes from `ClasslistUser.Username` and is included only when it contains exactly nine digits. A 403/404 remains an access or visibility error; the CLI does not attempt another route or extract browser credentials. Brightspace classlist visibility and privacy settings apply to the ID and display name; either may be absent if not visible in the classlist.
 
 Course listing follows `PagingInfo.Bookmark` while `HasMoreItems` is true. The CLI rejects missing or repeated course IDs/bookmarks and stops after 100 pages. It filters `OrgUnit.Type.Code` to Course Offering; `--active` additionally keeps records whose active state is true. Table output is tab-delimited for readable terminal use. JSON is one array of objects. CSV includes a header row and quotes fields according to RFC 4180 escaping rules.
 
@@ -30,6 +35,8 @@ Run `go test ./...` and `node --test extension/core.test.js`. The Go IPC tests r
 
 After building/registering the updated host and reloading the unpacked extension, sign in to Brightspace and run the commands above. Use a course ID you are authorized to access. Course listing may include closed courses; `--active` filters by the API's active flag.
 
+The student-list implementation has not yet been live-checked. First try a unique section such as `d2l students list --course CPSY-302-B`. If there is no exact section in the current term, the command asks whether to show alternatives and then requires an explicit choice. For a non-interactive shell, use `d2l courses list` to select the numeric course ID.
+
 For an existing installation managed by this repository, rebuild it with `./installers/install-chrome-native-host.sh <extension-id> --upgrade`. The installer checks the existing binary's Go build metadata and extension ID, then keeps timestamped backups before replacing it. Reload the extension and restart Chrome afterward.
 
 ## User-provided live evidence (2026-10-11)
@@ -38,4 +45,4 @@ For an existing installation managed by this repository, rebuild it with `./inst
 - `d2l courses list --active` returned only its header, so active filtering failed.
 - `d2l content list --course 887055` returned 10 root modules with IDs and titles.
 
-The enrollment mapper initially looked for role and active fields in the wrong part of the response. Brightspace documents them under `Access.ClasslistRoleName` and `Access.IsActive` ([MyOrgUnitInfo schema](https://docs.valence.desire2learn.com/res/enroll.html#enrollment-myorgunitinfo)). The extension projection and regression test have been corrected; rerun the course commands after updating/reloading the extension and host. M4 acceptance stays open until `--active` returns active offerings and the output columns are populated.
+The enrollment mapper initially looked for role and active fields in the wrong part of the response. Brightspace documents them under `Access.ClasslistRoleName` and `Access.IsActive` ([MyOrgUnitInfo schema](https://docs.valence.desire2learn.com/res/enroll.html#enrollment-myorgunitinfo)). The extension projection and regression test have been corrected; rerun the course commands after updating/reloading the extension and host. M4 acceptance stays open until `--active` returns active offerings and the output columns are populated. The new student-list path also needs a live check against an authorized course.

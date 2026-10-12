@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"strings"
 	"unicode"
@@ -46,7 +47,7 @@ func DecodeExtensionResponse(body []byte) (Response, error) {
 				return Response{}, fmt.Errorf("%w: unsafe response value", ErrInvalidFrame)
 			}
 		}
-		if len(response.Data.Versions) > 16 || len(response.Data.Courses) > 2000 || len(response.Data.Content) > 2000 {
+		if len(response.Data.Versions) > 16 || len(response.Data.Courses) > 2000 || len(response.Data.Content) > 2000 || len(response.Data.Students) > 2000 {
 			return Response{}, fmt.Errorf("%w: response collection exceeds limit", ErrInvalidFrame)
 		}
 		for _, item := range response.Data.Versions {
@@ -61,6 +62,14 @@ func DecodeExtensionResponse(body []byte) (Response, error) {
 		}
 		for _, item := range response.Data.Content {
 			if !safeResponseText(item.ID, 32) || !safeResponseText(item.Title, 512) || !safeResponseText(item.Type, 32) {
+				return Response{}, ErrInvalidFrame
+			}
+		}
+		if !safeResponseText(response.Data.Next, 4096) {
+			return Response{}, ErrInvalidFrame
+		}
+		for _, item := range response.Data.Students {
+			if !safeResponseText(item.StudentID, 128) || !safeResponseText(item.DisplayName, 256) {
 				return Response{}, ErrInvalidFrame
 			}
 		}
@@ -92,6 +101,8 @@ type ResponseData struct {
 	Versions   []APIVersion  `json:"versions,omitempty"`
 	Courses    []Course      `json:"courses,omitempty"`
 	Content    []ContentItem `json:"content,omitempty"`
+	Students   []Student     `json:"students,omitempty"`
+	Next       string        `json:"next,omitempty"`
 	Paging     *Paging       `json:"paging,omitempty"`
 }
 
@@ -111,6 +122,10 @@ type ContentItem struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	Type  string `json:"type,omitempty"`
+}
+type Student struct {
+	StudentID   string `json:"studentId"`
+	DisplayName string `json:"displayName"`
 }
 type Paging struct {
 	Bookmark     string `json:"bookmark,omitempty"`
@@ -137,21 +152,39 @@ func ValidateRequest(request Request) error {
 			allowed = []string{"bookmark"}
 		case "content.list":
 			allowed = []string{"courseId"}
+		case "students.page":
+			allowed = []string{"courseId", "next"}
 		default:
 			return ErrInvalidFrame
 		}
-		if len(params) != 1 || params[allowed[0]] == nil {
+		if len(params) != len(allowed) {
 			return ErrInvalidFrame
 		}
-		var value string
-		if json.Unmarshal(params[allowed[0]], &value) != nil || len(value) > 128 {
-			return ErrInvalidFrame
+		for _, key := range allowed {
+			if params[key] == nil {
+				return ErrInvalidFrame
+			}
+			var value string
+			maxLength := 128
+			if request.Operation == "students.page" && key == "next" {
+				maxLength = 4096
+			}
+			if json.Unmarshal(params[key], &value) != nil || len(value) > maxLength {
+				return ErrInvalidFrame
+			}
+			if (request.Operation == "content.list" || (request.Operation == "students.page" && key == "courseId")) && (value == "" || !isDecimalID(value)) {
+				return ErrInvalidFrame
+			}
+			if (request.Operation == "courses.page" || (request.Operation == "students.page" && key == "next")) && strings.ContainsAny(value, "\r\n\x00") {
+				return ErrInvalidFrame
+			}
 		}
-		if request.Operation == "content.list" && (value == "" || !isDecimalID(value)) {
-			return ErrInvalidFrame
-		}
-		if request.Operation == "courses.page" && strings.ContainsAny(value, "\r\n\x00&") {
-			return ErrInvalidFrame
+		if request.Operation == "students.page" {
+			var courseID, next string
+			if json.Unmarshal(params["courseId"], &courseID) != nil || json.Unmarshal(params["next"], &next) != nil ||
+				(next != "" && !validClasslistCursor(next, courseID)) {
+				return ErrInvalidFrame
+			}
 		}
 		return nil
 	}
@@ -159,6 +192,25 @@ func ValidateRequest(request Request) error {
 		return ErrInvalidFrame
 	}
 	return nil
+}
+
+func validClasslistCursor(value, courseID string) bool {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "https" || u.Host != "learn.sait.ca" || u.User != nil || u.Fragment != "" || u.RawQuery == "" {
+		return false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 7 || parts[0] != "d2l" || parts[1] != "api" || parts[2] != "le" || parts[4] != courseID || parts[5] != "classlist" || parts[6] != "paged" {
+		return false
+	}
+	if !regexp.MustCompile(`^\d{1,3}\.\d{1,3}$`).MatchString(parts[3]) {
+		return false
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil || len(query) != 1 || len(query["bookmark"]) != 1 || query.Get("bookmark") == "" || len(query.Get("bookmark")) > 1024 || strings.ContainsAny(query.Get("bookmark"), "\r\n\x00") {
+		return false
+	}
+	return true
 }
 
 func isDecimalID(s string) bool {

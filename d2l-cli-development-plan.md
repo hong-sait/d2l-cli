@@ -174,6 +174,7 @@ The broker/host should send only approved operation names and sanitized API resu
 | `d2l courses list --format json` | Machine-readable course list | CLI formatting |
 | `d2l courses list --format csv` | CSV export | CLI formatting |
 | `d2l content list --course 6605` | List root content for course | Proven browser endpoint |
+| `d2l students list --course CPSY-302-B` | List visible learner/student IDs and display names from a course classlist | Documented paged classlist API; permission-scoped |
 
 Examples:
 
@@ -184,6 +185,7 @@ d2l whoami
 d2l courses list --active
 d2l courses list --format csv > courses.csv
 d2l content list --course 6605
+d2l students list --course CPSY-302-B
 ```
 
 Default human-readable output should be concise; `--format json` and `--format csv` must be stable for shell pipelines. Use stdout for data, stderr for errors, and nonzero exit codes for failures. Never output student records or personally identifying information unless explicitly requested through an approved operation.
@@ -194,6 +196,7 @@ Default human-readable output should be concise; `--format json` and `--format c
 - `myenrollments` includes non-course organizational units. Filter course offerings using `OrgUnit.Type.Code` and report the enrolment role and active status when requested.
 - Follow `PagingInfo.Bookmark` while `HasMoreItems` is true, using the documented endpoint's pagination parameter. Add duplicate detection, max-page safety, and tests.
 - Initial content listing is root-only. Recursive content traversal is out of scope until relevant endpoints are verified.
+- Student listing uses the paged classlist endpoint, returns the nine-digit `Username` as the student ID plus display name, and includes only classlist roles labeled `Learner` or `Student`. Course codes resolve against the current calendar term; a missing exact section requires explicit confirmation and selection before using another section.
 - Handle HTTP 401/403, 404, 429, 5xx, expired sessions, malformed JSON, and network failures distinctly. Retry only safe requests and respect `Retry-After` when present.
 
 ## 8. Suggested repository layout

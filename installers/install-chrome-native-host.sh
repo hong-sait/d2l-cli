@@ -36,6 +36,7 @@ binary_path="$install_dir/d2l-native-host"
 cli_path="$install_dir/d2l"
 manifest_dir="$user_home/Library/Application Support/Google/Chrome/NativeMessagingHosts"
 manifest_path="$manifest_dir/com.sait.d2l.json"
+bridge_socket="$user_home/Library/Application Support/d2l-cli/bridge.sock"
 build_tmp="$install_dir/.d2l-native-host.$$"
 cli_tmp="$install_dir/.d2l-cli.$$"
 manifest_tmp="$manifest_dir/.com.sait.d2l.$$"
@@ -52,6 +53,47 @@ is_managed_binary() {
 '
 }
 
+is_managed_host_process() {
+	process_pid=$1
+	case "$process_pid" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	process_uid=$(ps -p "$process_pid" -o uid= 2>/dev/null | tr -d '[:space:]') || return 1
+	[ "$process_uid" = "$(id -u)" ] || return 1
+	process_executable=$(lsof -a -p "$process_pid" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1) || return 1
+	[ "$process_executable" = "$binary_path" ]
+}
+
+stop_running_managed_host() {
+	[ -S "$bridge_socket" ] || return 0
+	if ! command -v lsof >/dev/null 2>&1 || ! command -v ps >/dev/null 2>&1; then
+		printf '%s\n' 'Cannot safely inspect the Native Messaging bridge process; install lsof and retry.' >&2
+		return 1
+	fi
+	host_pids=$(lsof -t "$bridge_socket" 2>/dev/null || true)
+	[ -n "$host_pids" ] || return 0
+	for host_pid in $host_pids; do
+		if ! is_managed_host_process "$host_pid"; then
+			printf 'Refusing to terminate unexpected process using the Native Messaging bridge socket (PID %s).\n' "$host_pid" >&2
+			return 1
+		fi
+		if ! kill -TERM "$host_pid" 2>/dev/null; then
+			printf 'Could not stop the managed Native Messaging host (PID %s).\n' "$host_pid" >&2
+			return 1
+		fi
+		wait_step=0
+		while [ "$wait_step" -lt 5 ] && is_managed_host_process "$host_pid"; do
+			sleep 1
+			wait_step=$((wait_step + 1))
+		done
+		if is_managed_host_process "$host_pid"; then
+			printf 'Managed Native Messaging host (PID %s) did not stop after SIGTERM.\n' "$host_pid" >&2
+			return 1
+		fi
+		printf 'Stopped stale Native Messaging host process (PID %s).\n' "$host_pid"
+	done
+}
+
 if [ -e "$cli_path" ]; then
 	if [ "$upgrade" != true ]; then
 		printf 'Refusing to overwrite existing CLI: %s\nUse --upgrade only for an existing d2l-cli installation.\n' "$cli_path" >&2
@@ -62,13 +104,25 @@ if [ -e "$cli_path" ]; then
 		exit 2
 	fi
 fi
-if [ -e "$binary_path" ] && { [ "$upgrade" != true ] || ! is_managed_binary "$binary_path"; }; then
-	printf 'Refusing to overwrite an unrecognized native host: %s\n' "$binary_path" >&2
-	exit 2
+if [ -e "$binary_path" ]; then
+	if [ "$upgrade" != true ]; then
+		printf 'Refusing to overwrite existing native host: %s\nUse --upgrade only for a managed d2l-cli installation.\n' "$binary_path" >&2
+		exit 2
+	fi
+	if ! is_managed_binary "$binary_path"; then
+		printf 'Refusing to upgrade an unrecognized native host: %s\n' "$binary_path" >&2
+		exit 2
+	fi
 fi
-if [ -e "$manifest_path" ] && { [ "$upgrade" != true ] || ! grep -F '"name": "com.sait.d2l"' "$manifest_path" >/dev/null || ! grep -F "chrome-extension://$extension_id/" "$manifest_path" >/dev/null || ! grep -F "$binary_path" "$manifest_path" >/dev/null; }; then
-	printf 'Refusing to overwrite an unrecognized native host registration: %s\n' "$manifest_path" >&2
-	exit 2
+if [ -e "$manifest_path" ]; then
+	if [ "$upgrade" != true ]; then
+		printf 'Refusing to overwrite existing native host registration: %s\nUse --upgrade only for a managed d2l-cli installation.\n' "$manifest_path" >&2
+		exit 2
+	fi
+	if ! grep -F '"name": "com.sait.d2l"' "$manifest_path" >/dev/null || ! grep -F "chrome-extension://$extension_id/" "$manifest_path" >/dev/null || ! grep -F "$binary_path" "$manifest_path" >/dev/null; then
+		printf 'Refusing to upgrade an unrecognized native host registration: %s\n' "$manifest_path" >&2
+		exit 2
+	fi
 fi
 
 mkdir -p "$install_dir" "$manifest_dir"
@@ -99,6 +153,8 @@ cat > "$manifest_tmp" <<EOF
 EOF
 chmod 644 "$manifest_tmp"
 mv -f "$manifest_tmp" "$manifest_path"
+
+if [ "$upgrade" = true ]; then stop_running_managed_host; fi
 
 printf 'Installed native host binary: %s\n' "$binary_path"
 printf 'Installed CLI binary: %s\n' "$cli_path"

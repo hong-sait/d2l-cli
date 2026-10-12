@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -93,12 +96,12 @@ func newRequestID() string {
 
 func runCLI(args []string, stdout, stderr io.Writer, socketPath string) error {
 	if len(args) == 1 && args[0] == "--help" {
-		fmt.Fprintln(stdout, "Usage: d2l <status|whoami|api versions|courses list|content list --course ID>")
+		fmt.Fprintln(stdout, "Usage: d2l <status|whoami|api versions|courses list|content list --course ID|students list --course CODE>")
 		return nil
 	}
 	command, format, activeOnly, courseID, err := parseCLI(args)
 	if err != nil {
-		fmt.Fprintln(stderr, "Usage: d2l status | whoami | api versions | courses list [--active] [--format table|json|csv] | content list --course ID [--format table|json|csv]")
+		fmt.Fprintln(stderr, "Usage: d2l status | whoami | api versions | courses list [--active] [--format table|json|csv] | content list --course ID [--format table|json|csv] | students list --course CODE|ID [--format table|json|csv]")
 		return err
 	}
 	if socketPath == "" {
@@ -132,6 +135,22 @@ func runCLI(args []string, stdout, stderr io.Writer, socketPath string) error {
 			return reportBridgeError(response, err, stderr)
 		}
 		return writeContent(stdout, response.Data.Content, format)
+	}
+	if command == "students list" {
+		course, notice, err := resolveStudentCourse(ctx, socketPath, courseID, time.Now())
+		if err != nil {
+			fmt.Fprintln(stderr, err.Error())
+			return fmt.Errorf("course resolution failed")
+		}
+		if notice != "" {
+			fmt.Fprintln(stderr, notice)
+		}
+		students, err := listStudents(ctx, socketPath, course.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, "Could not list students: "+safeCLIErr(err))
+			return err
+		}
+		return writeStudents(stdout, students, format)
 	}
 	courses, err := listCourses(ctx, socketPath, activeOnly)
 	if err != nil {
@@ -187,6 +206,22 @@ func safeCLIErr(err error) string {
 	if err == nil {
 		return "request failed"
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "browser request timed out; reload the unpacked extension and restart Chrome, then retry"
+	}
+	switch err.Error() {
+	case "Unsupported read-only operation.":
+		return "the extension does not support this operation yet; reload the unpacked extension and restart Chrome"
+	case "Sign in to Brightspace and retry.", "Sign in to Brightspace or check course access.",
+		"Brightspace rate limit reached; retry later.", "Brightspace returned a non-JSON response.",
+		"Brightspace returned invalid JSON.", "Brightspace returned an unexpected response structure.",
+		"Brightspace returned an unexpected classlist paging link.",
+		"Brightspace request timed out.", "Brightspace request failed; check connectivity and sign-in.":
+		return err.Error()
+	}
+	if statusErr := regexp.MustCompile(`^Brightspace returned HTTP (\d{3})\.$`); statusErr.MatchString(err.Error()) {
+		return err.Error()
+	}
 	return "browser bridge request failed"
 }
 
@@ -204,7 +239,7 @@ func parseCLI(args []string) (command, format string, active bool, course string
 		return "", "", false, "", fmt.Errorf("unsupported command")
 	}
 	command = args[0] + " " + args[1]
-	if command != "courses list" && command != "content list" {
+	if command != "courses list" && command != "content list" && command != "students list" {
 		return "", "", false, "", fmt.Errorf("unsupported command")
 	}
 	for i := 2; i < len(args); i++ {
@@ -215,12 +250,12 @@ func parseCLI(args []string) (command, format string, active bool, course string
 			}
 			active = true
 		case "--course":
-			if command != "content list" || course != "" || i+1 >= len(args) {
+			if (command != "content list" && command != "students list") || course != "" || i+1 >= len(args) {
 				return "", "", false, "", fmt.Errorf("invalid course")
 			}
 			i++
 			course = args[i]
-			if !decimalID(course) {
+			if command == "content list" && !decimalID(course) || command == "students list" && !validCourseSelector(course) {
 				return "", "", false, "", fmt.Errorf("invalid course")
 			}
 		case "--format":
@@ -239,7 +274,7 @@ func parseCLI(args []string) (command, format string, active bool, course string
 	if format == "" {
 		format = "table"
 	}
-	if command == "content list" && course == "" {
+	if (command == "content list" || command == "students list") && course == "" {
 		return "", "", false, "", fmt.Errorf("course is required")
 	}
 	return command, format, active, course, nil
@@ -253,11 +288,176 @@ func decimalID(s string) bool {
 	return err == nil
 }
 
+var courseSelectorPattern = regexp.MustCompile(`(?i)^(?:[a-z]{2,8}-?)?\d{3}-?[a-z]$`)
+
+func validCourseSelector(s string) bool { return decimalID(s) || courseSelectorPattern.MatchString(s) }
+
 func listCourses(ctx context.Context, socket string, activeOnly bool) ([]native.Course, error) {
 	return collectCourses(activeOnly, func(bookmark string) (native.Response, error) {
 		params, _ := json.Marshal(map[string]string{"bookmark": bookmark})
 		return callBridge(ctx, socket, "courses.page", params)
 	})
+}
+
+var (
+	courseCodePattern = regexp.MustCompile(`(?i)([a-z]{2,8})-?(\d{3})-?([a-z])`)
+	selectorPattern   = regexp.MustCompile(`(?i)^(?:([a-z]{2,8})-?)?(\d{3})-?([a-z])$`)
+)
+
+type courseCode struct{ subject, number, section string }
+
+func parseCourseCode(value string) (courseCode, bool) {
+	m := selectorPattern.FindStringSubmatch(strings.TrimSpace(value))
+	if m == nil {
+		return courseCode{}, false
+	}
+	return courseCode{strings.ToUpper(m[1]), m[2], strings.ToUpper(m[3])}, true
+}
+
+func codesForCourse(course native.Course) []courseCode {
+	var found []courseCode
+	for _, source := range []string{course.Code, course.Name} {
+		for _, match := range courseCodePattern.FindAllStringSubmatch(source, -1) {
+			found = append(found, courseCode{strings.ToUpper(match[1]), match[2], strings.ToUpper(match[3])})
+		}
+	}
+	return found
+}
+
+func currentAcademicTerm(now time.Time) string {
+	term := "Fall"
+	switch now.Month() {
+	case time.January, time.February, time.March, time.April:
+		term = "Winter"
+	case time.May, time.June, time.July, time.August:
+		term = "Spring"
+	}
+	return fmt.Sprintf("%s %d", term, now.Year())
+}
+
+func resolveStudentCourse(ctx context.Context, socket, selector string, now time.Time) (native.Course, string, error) {
+	if decimalID(selector) {
+		return native.Course{ID: selector}, "", nil
+	}
+	query, _ := parseCourseCode(selector)
+	courses, err := listCourses(ctx, socket, false)
+	if err != nil {
+		return native.Course{}, "", fmt.Errorf("Could not list your courses. Sign in to Brightspace and retry.")
+	}
+	term := currentAcademicTerm(now)
+	var inTerm, exact []native.Course
+	for _, course := range courses {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(course.Name)), strings.ToLower(term)) {
+			continue
+		}
+		inTerm = append(inTerm, course)
+		for _, code := range codesForCourse(course) {
+			if code.number == query.number && code.section == query.section && (query.subject == "" || code.subject == query.subject) {
+				exact = append(exact, course)
+				break
+			}
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], "", nil
+	}
+	if len(exact) > 1 {
+		return native.Course{}, "", fmt.Errorf("More than one %s course matches in %s. Use a numeric course ID from `d2l courses list`.", selector, term)
+	}
+
+	var alternatives []native.Course
+	for _, course := range inTerm {
+		for _, code := range codesForCourse(course) {
+			if code.number == query.number && code.section != query.section && (query.subject == "" || code.subject == query.subject) {
+				alternatives = append(alternatives, course)
+				break
+			}
+		}
+	}
+	if len(alternatives) == 0 {
+		return native.Course{}, "", fmt.Errorf("No exact course %s or alternate section was found for %s.", selector, term)
+	}
+	if !isInteractiveStdin() {
+		return native.Course{}, "", fmt.Errorf("No exact course %s was found for %s. Other sections are available; rerun with a numeric course ID after choosing one from `d2l courses list`.", selector, term)
+	}
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Fprintf(os.Stderr, "No exact match for %s in %s. Check other sections? [y/N] ", selector, term)
+	answer, _ := reader.ReadString('\n')
+	if strings.ToLower(strings.TrimSpace(answer)) != "y" && strings.ToLower(strings.TrimSpace(answer)) != "yes" {
+		return native.Course{}, "", fmt.Errorf("No course selected.")
+	}
+	fmt.Fprintln(os.Stderr, "Available sections:")
+	for _, course := range alternatives {
+		fmt.Fprintf(os.Stderr, "  %s\t%s\t%s\n", course.ID, course.Name, course.Code)
+	}
+	fmt.Fprint(os.Stderr, "Enter the exact course code or numeric course ID to use (or q to cancel): ")
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+	if strings.EqualFold(choice, "q") || choice == "" {
+		return native.Course{}, "", fmt.Errorf("No course selected.")
+	}
+	for _, course := range alternatives {
+		if course.ID == choice || courseCodeMatchesSelection(course, choice) {
+			return course, fmt.Sprintf("Using explicitly selected alternate course %s (%s).", course.Code, course.ID), nil
+		}
+	}
+	return native.Course{}, "", fmt.Errorf("Selection did not match an available course. Use one of the exact codes or IDs shown.")
+}
+
+func courseCodeMatchesSelection(course native.Course, selection string) bool {
+	if strings.EqualFold(course.Code, selection) {
+		return true
+	}
+	selected, ok := parseCourseCode(selection)
+	if !ok {
+		return false
+	}
+	for _, code := range codesForCourse(course) {
+		if code == selected {
+			return true
+		}
+	}
+	return false
+}
+
+func isInteractiveStdin() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func listStudents(ctx context.Context, socket, courseID string) ([]native.Student, error) {
+	next := ""
+	seenCursors := map[string]bool{}
+	all := []native.Student{}
+	for page := 0; page < 100; page++ {
+		params, _ := json.Marshal(map[string]string{"courseId": courseID, "next": next})
+		response, err := callBridge(ctx, socket, "students.page", params)
+		if err != nil {
+			return nil, err
+		}
+		if !response.OK {
+			if response.Error != nil {
+				return nil, fmt.Errorf("%s", response.Error.Message)
+			}
+			return nil, fmt.Errorf("request failed")
+		}
+		if response.Data == nil || response.Data.Students == nil {
+			return nil, fmt.Errorf("invalid classlist page")
+		}
+		all = append(all, response.Data.Students...)
+		if len(all) > 10000 {
+			return nil, fmt.Errorf("student list exceeded the 10,000-record safety limit")
+		}
+		if response.Data.Next == "" {
+			return all, nil
+		}
+		if seenCursors[response.Data.Next] {
+			return nil, fmt.Errorf("repeated classlist paging link")
+		}
+		seenCursors[response.Data.Next] = true
+		next = response.Data.Next
+	}
+	return nil, fmt.Errorf("student list exceeded the 100-page safety limit")
 }
 
 func collectCourses(activeOnly bool, fetchPage func(string) (native.Response, error)) ([]native.Course, error) {
@@ -337,6 +537,15 @@ func writeContent(out io.Writer, rows []native.ContentItem, format string) error
 		r := [][]string{}
 		for _, v := range rows {
 			r = append(r, []string{v.ID, v.Title, v.Type})
+		}
+		return r
+	}())
+}
+func writeStudents(out io.Writer, rows []native.Student, format string) error {
+	return writeRecords(out, format, []string{"student_id", "name"}, rows, func() [][]string {
+		r := make([][]string, 0, len(rows))
+		for _, student := range rows {
+			r = append(r, []string{student.StudentID, student.DisplayName})
 		}
 		return r
 	}())
