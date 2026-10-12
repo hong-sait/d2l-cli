@@ -22,7 +22,7 @@ import (
 	"d2l-cli/internal/native"
 )
 
-// expectedExtensionOrigin is set by the Chrome host installer at build time.
+// expectedExtensionOrigin is set by the browser-specific native host installer.
 var expectedExtensionOrigin string
 
 func main() {

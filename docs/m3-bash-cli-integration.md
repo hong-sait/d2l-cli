@@ -1,20 +1,21 @@
 # M3 — Bash CLI integration
 
-M3 adds `d2l status` and `d2l whoami`. The CLI uses a local Unix-domain socket to ask the native host, which forwards one fixed request over the already-authorized Native Messaging connection to the extension. The extension makes the tested Brightspace `whoami` GET request and returns only `Identifier` and `UniqueName`.
+M3 adds `d2l status` and `d2l whoami`. The CLI uses a per-user local IPC endpoint to ask the native host, which forwards one fixed request over the already-authorized Native Messaging connection to the extension. The extension makes the tested Brightspace `whoami` GET request and returns only `Identifier` and `UniqueName`.
 
 ```text
-d2l whoami -> private per-user Unix socket -> native host
+d2l whoami -> protected per-user IPC -> native host
             -> Chrome/Edge Native Messaging -> extension service worker
             -> GET /d2l/api/lp/1.63/users/whoami
 ```
 
 ## Security and lifecycle
 
-- The socket is under the current user's OS configuration directory at `d2l-cli/bridge.sock`; its directory is mode 0700 and the socket is mode 0600. Symlink, wrong-owner, overly broad directory, and unexpected existing socket paths are rejected.
+- On macOS and Linux, the endpoint is a Unix socket under the current user's OS configuration directory at `d2l-cli/bridge.sock`; its directory is mode 0700 and the socket is mode 0600. Symlink, wrong-owner, overly broad directory, and unexpected existing socket paths are rejected.
+- On Windows, the endpoint is a named pipe derived from the current user's configuration directory. It rejects remote clients and uses the Windows default security descriptor for the current user. A per-user mutex ensures that only one browser host owns the CLI endpoint at a time.
 - The local protocol uses bounded, length-prefixed JSON and only allows `ping` and `whoami` with empty parameter objects. Active requests are correlated by ID and capped at 32.
 - The extension uses only the fixed Brightspace `whoami` GET route. It returns only `Identifier` and `UniqueName`; it never sends cookies, tokens, arbitrary URLs, or the full response body to the CLI.
 - The extension opens a persistent native connection on service-worker startup and reconnects with bounded backoff after disconnects. When the browser exits, the host and socket stop; `d2l status` reports disconnected and `d2l whoami` exits nonzero with an actionable message.
-- Unix-domain IPC is implemented for macOS and Linux. Windows builds still compile but report that this transport is not available there. Run one browser profile at a time for this user-scoped socket.
+- Chrome and Edge can each keep a host connected. One host owns the per-user IPC endpoint; another waits for ownership. Use the browser session you want the CLI to use.
 
 ## Install updated M3 files on macOS Chrome
 
@@ -28,6 +29,20 @@ The repository installer builds the native host and CLI with the extension ID em
 
 Reload the unpacked extension and restart Chrome. The registered native host stays at `~/.local/bin/d2l-native-host`; the CLI command is `~/.local/bin/d2l`.
 
+## Install on Windows
+
+From PowerShell at the repository root, build the CLI with `go build -o .\d2l.exe .`. Load the unpacked `extension/` directory in Chrome or Edge, copy the extension ID from each browser, then register one or both hosts:
+
+```powershell
+.\installers\install-windows-native-host.ps1 `
+  -ChromeExtensionId YOUR_CHROME_EXTENSION_ID `
+  -EdgeExtensionId YOUR_EDGE_EXTENSION_ID
+```
+
+The installer rebuilds the CLI and separate extension-ID-bound native hosts, places them under `%LOCALAPPDATA%\Programs\BrightspaceCLI`, and registers per-user Native Messaging manifests in the selected browser registry hives. Add `-Upgrade` only for an existing installation managed by this script. Close the browsers before upgrading.
+
+Restart the selected browser, sign in to Brightspace, and use **Test Native Messaging**. Run the CLI with `& "$env:LOCALAPPDATA\Programs\BrightspaceCLI\d2l.exe" status`.
+
 ## Manual acceptance check
 
 1. With Chrome open and signed in to Brightspace, run `d2l status`; expect `Browser bridge: connected`.
@@ -38,7 +53,7 @@ Reload the unpacked extension and restart Chrome. The registered native host sta
 
 ## Automated verification
 
-`go test ./...` includes a Unix-socket permission/correlation test, a simulated extension-to-host-to-CLI `whoami` round trip, disconnected status behavior, and CLI error/output checks. `node --test extension/core.test.js` verifies that the extension returns only the two allowlisted identity fields and sanitizes expired-session responses. These tests do not replace the live-browser acceptance check above.
+`go test ./...` includes Unix-socket permission/correlation checks and a simulated extension-to-host-to-CLI round trip. Windows named-pipe behavior still requires validation on a Windows machine. `node --test extension/core.test.js` verifies that the extension returns only allowlisted identity fields and sanitizes expired-session responses. These checks do not replace the live-browser acceptance check above.
 
 ## Current state
 
