@@ -97,14 +97,90 @@ func newRequestID() string {
 	return fmt.Sprintf("cli-%d-%d", time.Now().UnixNano(), requestCounter.Add(1))
 }
 
+func printUsage(w io.Writer, topic string) {
+	switch topic {
+	case "students":
+		fmt.Fprintln(w, `Brightspace student commands
+
+Usage:
+  d2l students list --course COURSE [--format table|json|csv]
+  d2l students search NAME [--format table|json|csv]
+
+Examples:
+  d2l students list --course 302b
+  d2l students list --course CPSY-302-B --format csv
+  d2l students search "John Doe"
+  d2l students search "Doe, John" --format json
+
+COURSE can be a numeric course ID, full course code, or unique short code.
+Search checks current-term courses; if no exact name matches, it suggests similar names.`)
+	case "courses":
+		fmt.Fprintln(w, `Brightspace course commands
+
+Usage:
+  d2l courses list [--all] [--active] [--format table|json|csv]
+
+Examples:
+  d2l courses list
+  d2l courses list --all
+  d2l courses list --active --format json
+
+By default, list shows current and future courses. --all includes past courses.`)
+	case "content":
+		fmt.Fprintln(w, `Brightspace content commands
+
+Usage:
+  d2l content list --course ID [--format table|json|csv]
+
+Examples:
+  d2l content list --course 887055
+  d2l content list --course 887055 --format json
+
+ID must be a numeric Brightspace course ID.`)
+	case "api":
+		fmt.Fprintln(w, `Brightspace API commands
+
+Usage:
+  d2l api versions
+
+Example:
+  d2l api versions`)
+	default:
+		fmt.Fprintln(w, `Brightspace read-only CLI
+
+Usage:
+  d2l status
+  d2l whoami
+  d2l api versions
+  d2l courses list [--all] [--active] [--format table|json|csv]
+  d2l content list --course ID [--format table|json|csv]
+  d2l students list --course COURSE [--format table|json|csv]
+  d2l students search NAME [--format table|json|csv]
+
+Examples:
+  d2l courses list
+  d2l students list --course 302b
+  d2l students search "John Doe"
+
+Use d2l students, d2l courses, or d2l content for more examples.
+Use d2l --help to show this page.`)
+	}
+}
+
 func runCLI(args []string, stdout, stderr io.Writer, socketPath string) error {
-	if len(args) == 1 && args[0] == "--help" {
-		fmt.Fprintln(stdout, "Usage: d2l <status|whoami|api versions|courses list|content list --course ID|students list --course CODE|students search NAME>")
+	if len(args) == 0 || (len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help")) {
+		printUsage(stdout, "")
+		return nil
+	}
+	if (len(args) == 1 && (args[0] == "students" || args[0] == "courses" || args[0] == "content" || args[0] == "api")) ||
+		(len(args) >= 2 && (args[len(args)-1] == "--help" || args[len(args)-1] == "-h")) {
+		printUsage(stdout, args[0])
 		return nil
 	}
 	command, format, activeOnly, courseID, err := parseCLI(args)
 	if err != nil {
-		fmt.Fprintln(stderr, "Usage: d2l status | whoami | api versions | courses list [--all] [--active] [--format table|json|csv] | content list --course ID [--format table|json|csv] | students list --course CODE|ID [--format table|json|csv] | students search NAME [--format table|json|csv]")
+		fmt.Fprintln(stderr, "Error:", err)
+		printUsage(stderr, args[0])
 		return err
 	}
 	if socketPath == "" {

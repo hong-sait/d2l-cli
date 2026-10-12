@@ -91,7 +91,7 @@ For `students list`, the course selector can be a numeric Brightspace course ID,
 
 `courses list` emits only `id` and `name` in table, CSV, and JSON output. `students list` emits `student_id` and `name`; the ID is the nine-digit Brightspace username when available. Course and classlist visibility depend on your Brightspace permissions. Redirected output files may contain student information, so store and share them appropriately.
 
-Run `d2l --help` for a short command summary. Errors go to standard error and failed commands exit with a nonzero status.
+Run `d2l --help` for all commands and examples, or `d2l students`, `d2l courses`, or `d2l content` for focused help. Errors go to standard error and failed commands exit with a nonzero status.
 
 ## Windows
 
