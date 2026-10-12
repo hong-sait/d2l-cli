@@ -4,6 +4,7 @@
 **Initial platform:** Bash terminal + Go executable + Microsoft Edge / Google Chrome (Manifest V3)  
 **Target instance:** `https://learn.sait.ca`  
 **Initial release:** Read-only MVP
+**D2L API endpoints:** https://docs.valence.desire2learn.com/http-routingtable.html
 
 ## 1. Goal
 
@@ -169,12 +170,13 @@ The broker/host should send only approved operation names and sanitized API resu
 | `d2l status` | Report extension, native host, IPC, session and API status | Bridge diagnostics |
 | `d2l api versions` | Show supported product API versions | Proven public endpoint |
 | `d2l whoami` | Show authenticated user | Proven browser endpoint |
-| `d2l courses list` | List accessible course offerings | Proven browser endpoint; pagination required |
+| `d2l courses list` | List current and future semester course offerings | Proven browser endpoint; pagination required |
+| `d2l courses list --all` | Include past and unclassified course offerings | Client-side term filtering |
 | `d2l courses list --active` | Filter active course offerings | Client-side response filtering |
 | `d2l courses list --format json` | Machine-readable course list | CLI formatting |
 | `d2l courses list --format csv` | CSV export | CLI formatting |
 | `d2l content list --course 6605` | List root content for course | Proven browser endpoint |
-| `d2l students list --course CPSY-302-B` | List visible learner/student IDs and display names from a course classlist | Documented paged classlist API; permission-scoped |
+| `d2l students list --course CPSY-302-B` | List visible learner/student IDs and display names from a course classlist | Verified classlist API; permission-scoped |
 
 Examples:
 
@@ -183,6 +185,7 @@ d2l status
 d2l api versions
 d2l whoami
 d2l courses list --active
+d2l courses list --all
 d2l courses list --format csv > courses.csv
 d2l content list --course 6605
 d2l students list --course CPSY-302-B
@@ -193,10 +196,10 @@ Default human-readable output should be concise; `--format json` and `--format c
 ### API-specific details
 
 - Discover supported versions dynamically; retain tested `lp=1.63` and `le=1.99` as initial compatibility targets, not perpetual constants.
-- `myenrollments` includes non-course organizational units. Filter course offerings using `OrgUnit.Type.Code` and report the enrolment role and active status when requested.
+- `myenrollments` includes non-course organizational units. Filter course offerings using `OrgUnit.Type.Code`; use active status for `--active` filtering. Course list output contains only ID and name.
 - Follow `PagingInfo.Bookmark` while `HasMoreItems` is true, using the documented endpoint's pagination parameter. Add duplicate detection, max-page safety, and tests.
 - Initial content listing is root-only. Recursive content traversal is out of scope until relevant endpoints are verified.
-- Student listing uses the paged classlist endpoint, returns the nine-digit `Username` as the student ID plus display name, and includes only classlist roles labeled `Learner` or `Student`. Course codes resolve against the current calendar term; a missing exact section requires explicit confirmation and selection before using another section.
+- Student listing uses the verified `/classlist/` endpoint, returns the nine-digit `Username` as the student ID plus display name, and includes only classlist roles labeled `Learner` or `Student`. Course codes resolve against the current calendar term; a missing exact section requires explicit confirmation and selection before using another section.
 - Handle HTTP 401/403, 404, 429, 5xx, expired sessions, malformed JSON, and network failures distinctly. Retry only safe requests and respect `Retry-After` when present.
 
 ## 8. Suggested repository layout

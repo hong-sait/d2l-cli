@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"text/tabwriter"
 	"time"
 
 	"d2l-cli/internal/bridge"
@@ -96,12 +98,12 @@ func newRequestID() string {
 
 func runCLI(args []string, stdout, stderr io.Writer, socketPath string) error {
 	if len(args) == 1 && args[0] == "--help" {
-		fmt.Fprintln(stdout, "Usage: d2l <status|whoami|api versions|courses list|content list --course ID|students list --course CODE>")
+		fmt.Fprintln(stdout, "Usage: d2l <status|whoami|api versions|courses list|content list --course ID|students list --course CODE|students search NAME>")
 		return nil
 	}
 	command, format, activeOnly, courseID, err := parseCLI(args)
 	if err != nil {
-		fmt.Fprintln(stderr, "Usage: d2l status | whoami | api versions | courses list [--active] [--format table|json|csv] | content list --course ID [--format table|json|csv] | students list --course CODE|ID [--format table|json|csv]")
+		fmt.Fprintln(stderr, "Usage: d2l status | whoami | api versions | courses list [--all] [--active] [--format table|json|csv] | content list --course ID [--format table|json|csv] | students list --course CODE|ID [--format table|json|csv] | students search NAME [--format table|json|csv]")
 		return err
 	}
 	if socketPath == "" {
@@ -152,10 +154,28 @@ func runCLI(args []string, stdout, stderr io.Writer, socketPath string) error {
 		}
 		return writeStudents(stdout, students, format)
 	}
+	if command == "students search" {
+		matches, err := searchCurrentTermStudents(ctx, socketPath, courseID, time.Now())
+		if err != nil {
+			fmt.Fprintln(stderr, "Could not search students: "+safeCLIErr(err))
+			return err
+		}
+		return writeStudentMatches(stdout, matches, format)
+	}
 	courses, err := listCourses(ctx, socketPath, activeOnly)
 	if err != nil {
 		fmt.Fprintln(stderr, "Could not list courses: "+safeCLIErr(err))
 		return err
+	}
+	allCourses := false
+	for _, arg := range args {
+		if arg == "--all" {
+			allCourses = true
+			break
+		}
+	}
+	if !allCourses {
+		courses = currentAndFutureCourses(courses, time.Now())
 	}
 	return writeCourses(stdout, courses, format)
 }
@@ -215,7 +235,6 @@ func safeCLIErr(err error) string {
 	case "Sign in to Brightspace and retry.", "Sign in to Brightspace or check course access.",
 		"Brightspace rate limit reached; retry later.", "Brightspace returned a non-JSON response.",
 		"Brightspace returned invalid JSON.", "Brightspace returned an unexpected response structure.",
-		"Brightspace returned an unexpected classlist paging link.",
 		"Brightspace request timed out.", "Brightspace request failed; check connectivity and sign-in.":
 		return err.Error()
 	}
@@ -226,6 +245,7 @@ func safeCLIErr(err error) string {
 }
 
 func parseCLI(args []string) (command, format string, active bool, course string, err error) {
+	all := false
 	if len(args) == 1 && args[0] == "status" {
 		return "status", "table", false, "", nil
 	}
@@ -239,11 +259,23 @@ func parseCLI(args []string) (command, format string, active bool, course string
 		return "", "", false, "", fmt.Errorf("unsupported command")
 	}
 	command = args[0] + " " + args[1]
-	if command != "courses list" && command != "content list" && command != "students list" {
+	if command != "courses list" && command != "content list" && command != "students list" && command != "students search" {
 		return "", "", false, "", fmt.Errorf("unsupported command")
 	}
 	for i := 2; i < len(args); i++ {
+		if command == "students search" && !strings.HasPrefix(args[i], "--") {
+			if course != "" {
+				course += " "
+			}
+			course += args[i]
+			continue
+		}
 		switch args[i] {
+		case "--all":
+			if command != "courses list" || all {
+				return "", "", false, "", fmt.Errorf("invalid option")
+			}
+			all = true
 		case "--active":
 			if command != "courses list" || active {
 				return "", "", false, "", fmt.Errorf("invalid option")
@@ -274,8 +306,14 @@ func parseCLI(args []string) (command, format string, active bool, course string
 	if format == "" {
 		format = "table"
 	}
-	if (command == "content list" || command == "students list") && course == "" {
+	if (command == "content list" || command == "students list" || command == "students search") && course == "" {
+		if command == "students search" {
+			return "", "", false, "", fmt.Errorf("student name is required")
+		}
 		return "", "", false, "", fmt.Errorf("course is required")
+	}
+	if command == "students search" && !validStudentNameQuery(course) {
+		return "", "", false, "", fmt.Errorf("invalid student name")
 	}
 	return command, format, active, course, nil
 }
@@ -333,6 +371,40 @@ func currentAcademicTerm(now time.Time) string {
 		term = "Spring"
 	}
 	return fmt.Sprintf("%s %d", term, now.Year())
+}
+
+var academicTermNamePattern = regexp.MustCompile(`(?i)^\s*(Winter|Spring|Fall)\s+(\d{4})(?:\s|$)`)
+
+func currentAndFutureCourses(courses []native.Course, now time.Time) []native.Course {
+	currentSeason := 2
+	if now.Month() <= time.April {
+		currentSeason = 0
+	} else if now.Month() <= time.August {
+		currentSeason = 1
+	}
+	currentOrder := now.Year()*3 + currentSeason
+	result := make([]native.Course, 0, len(courses))
+	for _, course := range courses {
+		match := academicTermNamePattern.FindStringSubmatch(course.Name)
+		if match == nil {
+			continue
+		}
+		year, err := strconv.Atoi(match[2])
+		if err != nil {
+			continue
+		}
+		season := 2
+		switch strings.ToLower(match[1]) {
+		case "winter":
+			season = 0
+		case "spring":
+			season = 1
+		}
+		if year*3+season >= currentOrder {
+			result = append(result, course)
+		}
+	}
+	return result
 }
 
 func resolveStudentCourse(ctx context.Context, socket, selector string, now time.Time) (native.Course, string, error) {
@@ -426,38 +498,118 @@ func isInteractiveStdin() bool {
 }
 
 func listStudents(ctx context.Context, socket, courseID string) ([]native.Student, error) {
-	next := ""
-	seenCursors := map[string]bool{}
-	all := []native.Student{}
-	for page := 0; page < 100; page++ {
-		params, _ := json.Marshal(map[string]string{"courseId": courseID, "next": next})
-		response, err := callBridge(ctx, socket, "students.page", params)
-		if err != nil {
-			return nil, err
-		}
-		if !response.OK {
-			if response.Error != nil {
-				return nil, fmt.Errorf("%s", response.Error.Message)
-			}
-			return nil, fmt.Errorf("request failed")
-		}
-		if response.Data == nil || response.Data.Students == nil {
-			return nil, fmt.Errorf("invalid classlist page")
-		}
-		all = append(all, response.Data.Students...)
-		if len(all) > 10000 {
-			return nil, fmt.Errorf("student list exceeded the 10,000-record safety limit")
-		}
-		if response.Data.Next == "" {
-			return all, nil
-		}
-		if seenCursors[response.Data.Next] {
-			return nil, fmt.Errorf("repeated classlist paging link")
-		}
-		seenCursors[response.Data.Next] = true
-		next = response.Data.Next
+	params, _ := json.Marshal(map[string]string{"courseId": courseID})
+	response, err := callBridge(ctx, socket, "students.list", params)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("student list exceeded the 100-page safety limit")
+	if !response.OK {
+		if response.Error != nil {
+			return nil, fmt.Errorf("%s", response.Error.Message)
+		}
+		return nil, fmt.Errorf("request failed")
+	}
+	if response.Data == nil || response.Data.Students == nil {
+		return nil, fmt.Errorf("invalid classlist response")
+	}
+	return response.Data.Students, nil
+}
+
+type studentMatch struct {
+	StudentID string `json:"student_id"`
+	Name      string `json:"name"`
+	CourseID  string `json:"course_id"`
+	Course    string `json:"course"`
+	Code      string `json:"code,omitempty"`
+}
+
+func validStudentNameQuery(query string) bool {
+	query = strings.TrimSpace(query)
+	if len(query) < 2 || len(query) > 128 || strings.ContainsAny(query, "\r\n\x00") {
+		return false
+	}
+	return len(nameTokens(query)) > 0
+}
+
+var studentNameTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
+
+func nameTokens(value string) []string {
+	value = strings.ToLower(value)
+	return studentNameTokenPattern.FindAllString(value, -1)
+}
+
+func studentNameMatches(displayName, query string) bool {
+	wanted := nameTokens(query)
+	available := nameTokens(displayName)
+	if len(wanted) == 0 || len(available) == 0 {
+		return false
+	}
+	// A one-token query searches first or last name. Multi-token queries match
+	// each supplied name component regardless of order, including comma form.
+	for _, token := range wanted {
+		found := false
+		for _, candidate := range available {
+			if candidate == token {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func searchCurrentTermStudents(ctx context.Context, socket, query string, now time.Time) ([]studentMatch, error) {
+	courses, err := listCourses(ctx, socket, false)
+	if err != nil {
+		return nil, fmt.Errorf("could not list current courses")
+	}
+	term := strings.ToLower(currentAcademicTerm(now))
+	matches := []studentMatch{}
+	for _, course := range courses {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(course.Name)), term) {
+			continue
+		}
+		students, err := listStudents(ctx, socket, course.ID)
+		if err != nil {
+			return nil, fmt.Errorf("could not inspect a current-term course classlist")
+		}
+		for _, student := range students {
+			if studentNameMatches(student.DisplayName, query) {
+				matches = append(matches, studentMatch{StudentID: student.StudentID, Name: student.DisplayName, CourseID: course.ID, Course: course.Name, Code: course.Code})
+			}
+		}
+	}
+	return matches, nil
+}
+
+func writeStudentMatches(w io.Writer, matches []studentMatch, format string) error {
+	if format == "json" {
+		encoder := json.NewEncoder(w)
+		encoder.SetEscapeHTML(true)
+		return encoder.Encode(matches)
+	}
+	if format == "csv" {
+		writer := csv.NewWriter(w)
+		if err := writer.Write([]string{"student_id", "name", "course_id", "course", "code"}); err != nil {
+			return err
+		}
+		for _, match := range matches {
+			if err := writer.Write([]string{match.StudentID, match.Name, match.CourseID, match.Course, match.Code}); err != nil {
+				return err
+			}
+		}
+		writer.Flush()
+		return writer.Error()
+	}
+	writer := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "student_id\tname\tcourse_id\tcourse\tcode")
+	for _, match := range matches {
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", match.StudentID, match.Name, match.CourseID, match.Course, match.Code)
+	}
+	return writer.Flush()
 }
 
 func collectCourses(activeOnly bool, fetchPage func(string) (native.Response, error)) ([]native.Course, error) {
@@ -520,17 +672,17 @@ func writeVersions(out io.Writer, rows []native.APIVersion, format string) error
 	}())
 }
 func writeCourses(out io.Writer, rows []native.Course, format string) error {
-	return writeRecords(out, format, []string{"id", "name", "code", "role", "active"}, rows, func() [][]string {
-		r := [][]string{}
-		for _, v := range rows {
-			active := ""
-			if v.Active != nil {
-				active = strconv.FormatBool(*v.Active)
-			}
-			r = append(r, []string{v.ID, v.Name, v.Code, v.Role, active})
-		}
-		return r
-	}())
+	type courseOutput struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	data := make([]courseOutput, 0, len(rows))
+	records := make([][]string, 0, len(rows))
+	for _, course := range rows {
+		data = append(data, courseOutput{ID: course.ID, Name: course.Name})
+		records = append(records, []string{course.ID, course.Name})
+	}
+	return writeRecords(out, format, []string{"id", "name"}, data, records)
 }
 func writeContent(out io.Writer, rows []native.ContentItem, format string) error {
 	return writeRecords(out, format, []string{"id", "title", "type"}, rows, func() [][]string {

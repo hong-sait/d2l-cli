@@ -120,10 +120,29 @@ test("courses page uses only the fixed enrollment route and projects allowlisted
   assert.doesNotMatch(JSON.stringify(result), /private/);
 });
 
+test("student list uses the verified classlist route and returns only student IDs and names", async () => {
+  const seen = [];
+  const result = await fetchReadOperation("students.list", { courseId: "886700" }, async (url, options) => {
+    seen.push({ url, options });
+    if (url.endsWith("/d2l/api/versions/")) return response({ url, body: [{ ProductCode: "le", LatestVersion: "1.99" }] });
+    return response({ url, body: [
+      { Username: "000123456", DisplayName: "Example, Student", ClasslistRoleDisplayName: "Student", Email: "private@example.invalid" },
+      { Username: "000654321", DisplayName: "Example, Teacher", ClasslistRoleDisplayName: "Instructor" }
+    ] });
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.data, { students: [{ studentId: "000123456", displayName: "Example, Student" }] });
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].url, "https://learn.sait.ca/d2l/api/le/1.99/886700/classlist/");
+  assert.equal(seen[1].options.method, "GET");
+  assert.doesNotMatch(JSON.stringify(result), /private@example/);
+});
+
 test("read operations reject arbitrary operation names and unsafe course IDs before fetch", async () => {
   let calls = 0;
   const fetchImpl = async () => { calls++; throw new Error("unexpected"); };
   assert.equal((await fetchReadOperation("proxy", { url: "https://example.com" }, fetchImpl)).ok, false);
   assert.equal((await fetchReadOperation("content.list", { courseId: "1/../2" }, fetchImpl)).ok, false);
+  assert.equal((await fetchReadOperation("students.list", { courseId: "1/../2" }, fetchImpl)).ok, false);
   assert.equal(calls, 0);
 });

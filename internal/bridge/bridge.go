@@ -145,7 +145,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, socketPath string) 
 					(call.operation == "api.versions" && (response.Data == nil || len(response.Data.Versions) == 0)) ||
 					(call.operation == "courses.page" && (response.Data == nil || response.Data.Courses == nil || response.Data.Paging == nil)) ||
 					(call.operation == "content.list" && (response.Data == nil || response.Data.Content == nil)) ||
-					(call.operation == "students.page" && (response.Data == nil || response.Data.Students == nil))) {
+					(call.operation == "students.list" && (response.Data == nil || response.Data.Students == nil))) {
 					response = native.Response{ID: response.ID, OK: false, Error: &native.ResponseError{Code: "invalid_response", Message: "Browser returned an incomplete response."}}
 				}
 				call.reply <- response

@@ -157,7 +157,6 @@
   }
   async function fetchReadOperation(operation, params, fetchImpl) {
     let path;
-    let apiVersion = "";
     let target = null;
     if (operation === "api.versions") path = "/d2l/api/versions/";
     else if (operation === "courses.page") {
@@ -165,8 +164,8 @@
       target = { product: "lp", route: version => `/d2l/api/lp/${version}/enrollments/myenrollments/` + (bookmark ? `?bookmark=${encodeURIComponent(bookmark)}` : "") };
     } else if (operation === "content.list" && typeof params.courseId === "string" && /^\d{1,20}$/.test(params.courseId)) {
       target = { product: "le", route: version => `/d2l/api/le/${version}/${params.courseId}/content/root/` };
-    } else if (operation === "students.page" && typeof params.courseId === "string" && /^\d{1,20}$/.test(params.courseId) && typeof params.next === "string" && params.next.length <= 4096) {
-      target = { product: "le", route: version => `/d2l/api/le/${version}/${params.courseId}/classlist/paged/` };
+    } else if (operation === "students.list" && typeof params.courseId === "string" && /^\d{1,20}$/.test(params.courseId)) {
+      target = { product: "le", route: version => `/d2l/api/le/${version}/${params.courseId}/classlist/` };
     } else return { ok: false, error: { code: "invalid_request", message: "Unsupported read-only operation." } };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
@@ -182,13 +181,7 @@
         const product = versionsBody.find(item => item && item.ProductCode === target.product);
         const version = product && product.LatestVersion;
         if (typeof version !== "string" || !/^\d{1,3}\.\d{1,3}$/.test(version)) return invalidData();
-        apiVersion = version;
         path = target.route(version);
-        if (operation === "students.page" && params.next) {
-          const cursor = classlistCursorPath(params.next, version, params.courseId);
-          if (!cursor) return { ok: false, error: { code: "invalid_response", message: "Brightspace returned an unexpected classlist paging link." } };
-          path = cursor;
-        }
       }
       const response = await fetchImpl(BASE + path, { method: "GET", credentials: "include", redirect: "follow", cache: "no-store", signal: controller.signal, headers: { "Accept": "application/json" } });
       if (response.redirected || !response.url.startsWith(BASE + "/")) return { ok: false, error: { code: "auth_required", message: "Sign in to Brightspace and retry." } };
@@ -217,22 +210,16 @@
         });
         return { ok: true, data: { courses, paging: { bookmark: String(body.PagingInfo.Bookmark || ""), hasMoreItems: body.PagingInfo.HasMoreItems } } };
       }
-      if (operation === "students.page") {
-        if (!body || !Array.isArray(body.Objects) || !(body.Next === null || typeof body.Next === "string")) return invalidData();
-        let next = "";
-        if (body.Next) {
-          next = classlistCursorPath(body.Next, apiVersion, params.courseId);
-          if (!next) return { ok: false, error: { code: "invalid_response", message: "Brightspace returned an unexpected classlist paging link." } };
-          next = BASE + next;
-        }
-        const students = body.Objects.filter(item => {
+      if (operation === "students.list") {
+        if (!Array.isArray(body) || body.length > 2000) return invalidData();
+        const students = body.filter(item => {
           const role = String(item && item.ClasslistRoleDisplayName || "").trim();
           return /^(learner|learners|student|students)$/i.test(role);
         }).map(item => ({ studentId: item && typeof item.Username === "string" && /^\d{9}$/.test(item.Username) ? item.Username : "",
           displayName: item && typeof item.DisplayName === "string" ? item.DisplayName : "" }))
           .filter(item => item.displayName.length > 0 && item.displayName.length <= 256 && !/[\u0000-\u001f\u007f]/.test(item.displayName) &&
             item.studentId.length <= 128 && !/[\u0000-\u001f\u007f]/.test(item.studentId));
-        return { ok: true, data: { students, next } };
+        return { ok: true, data: { students } };
       }
       const modules = Array.isArray(body) ? body : (Array.isArray(body.Modules) ? body.Modules : null);
       if (!modules) return invalidData();
@@ -241,18 +228,6 @@
     } catch (error) {
       return { ok: false, error: { code: error && error.name === "AbortError" ? "timeout" : "network_error", message: error && error.name === "AbortError" ? "Brightspace request timed out." : "Brightspace request failed; check connectivity and sign-in." } };
     } finally { clearTimeout(timer); }
-  }
-  function classlistCursorPath(value, version, courseId) {
-    try {
-      const url = new URL(value, BASE);
-      const expectedPath = `/d2l/api/le/${version}/${courseId}/classlist/paged/`;
-      if (url.origin !== BASE || url.pathname !== expectedPath || url.username || url.password || url.hash) return "";
-      const keys = Array.from(url.searchParams.keys());
-      if (keys.length !== 1 || keys[0] !== "bookmark") return "";
-      const bookmark = url.searchParams.get("bookmark");
-      if (!bookmark || bookmark.length > 1024 || /[\r\n\0]/.test(bookmark)) return "";
-      return `${expectedPath}?bookmark=${encodeURIComponent(bookmark)}`;
-    } catch (_) { return ""; }
   }
   function invalidData() { return { ok: false, error: { code: "invalid_response", message: "Brightspace returned an unexpected response structure." } }; }
   function sanitizedReport(results, browser) {
